@@ -70,7 +70,9 @@ class AudioTransformer:
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice_config = voice_config or {}
         language_code = voice_config.get("language_code", "en-US")
-        voice_name = voice_config.get("voice_name", "en-US-Standard-A")
+        voice_name = (
+            voice_config.get("voice_name") or f"{language_code}-Standard-A"
+        )
 
         voice = texttospeech.VoiceSelectionParams(
             language_code=language_code, name=voice_name
