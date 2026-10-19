@@ -1279,7 +1279,9 @@ def test_bidi_session_handler_dtmf_waits_for_turn_completion(
     handler._save_and_increment_agent_audio.assert_called_once()
 
 
-def test_agent_turn_manager_skip_playback_wait_waits_for_turn_completed() -> None:
+def test_agent_turn_manager_skip_playback_wait_waits_for_turn_completed() -> (
+    None
+):
     """When skip_playback_wait=True, is_agent_done_talking must return False
     until turn_completed_flag is set, then return True immediately without
     waiting for audio duration playback.
