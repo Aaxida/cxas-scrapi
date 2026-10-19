@@ -1,6 +1,42 @@
 # Changelog
 
 
+## [1.10.0](https://github.com/GoogleCloudPlatform/cxas-scrapi/compare/v1.9.1...v1.10.0) (2026-10-17)
+
+
+### Features
+
+* **cli:** add --skip-playback-wait flag to evals report command ([#470](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/470)) ([#474](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/474)) ([cfadc29](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/cfadc29b60d5f059bca2836bce5ad7d00ed7f76a))
+* **evals:** add optional Naturalness Metric to SimulationEvals ([2a5154f](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/2a5154f3bf8e44468c2bb7656b4ead7dc65d1ad3))
+* **evals:** add ShadowEvals for replaying past conversations with hybrid audio/TTS simUser ([41cee96](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/41cee96fc92787800816b7b84b87140a76bfac72))
+* **evals:** ShadowEvals preflight, audio artifacts + side-by-side report, docs, lint/runner cleanups ([b76fd1f](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/b76fd1f710f4e06de22593bb83dfa7ef7d661687))
+* **reporting:** add callback time decomposition (code + ext_wait + sandbox) ([8d6bbc4](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/8d6bbc42c414db8772c47cc2bd14d42454e9d1e9))
+* **reporting:** add First Audio header pin and split pre-speech TTFA vs post-speech audio streaming in waterfall ([690d9ac](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/690d9ac6f742a1f950aacff7d6eeff35a2696c50))
+* **reporting:** add Perceived Latency & Bottleneck telemetry to HTML eval reports ([b201c5e](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/b201c5eb8e04184438c371f07f1a86453098a8e6))
+* **reporting:** anchor turn waterfall at VAD.endTime and omit Customer Speech (VAD) row ([d6c4c14](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/d6c4c14c1fb304ff9ec0d6d4bf9ca352af06d5e3))
+* **reporting:** group consecutive callback trace lines into collapsible drawer ([44f35fa](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/44f35fa9d815eb215bb7b62e418a860289f8f144))
+
+
+### Bug Fixes
+
+* **ci:** use secrets.GH_TOKEN for release-please to satisfy Google CLA ([#460](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/460)) ([eac70da](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/eac70da61021a4aa5373c2c62b165795a01a5e3c))
+* **cli:** report server import warnings and fail on partial push ([#463](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/463)) ([158f196](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/158f19610c553660300c0acca0f8389a4cce81e6))
+* **evals:** fail closed on ungraded expectations and add infra_retries ([#468](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/468)) ([0e9abc4](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/0e9abc411e488ef16c3d5707d21691b500f2e991))
+* **evals:** handle DTMF and &lt;context&gt;/&lt;event&gt; tags in ShadowEvals and BidiSessionHandler ([6adb806](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/6adb80602cc6ceb1898cc78e9e0f3f1bfd0c3d35))
+* **evals:** make ShadowEvals replay recorded audio reliably and harden config ([4b612e2](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/4b612e23baaac49f649959db4fafad8dc5080347))
+* **linter:** avoid false-positive required fields for 'Optional. Required ...' docstrings ([#471](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/471)) ([#475](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/475)) ([467f02a](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/467f02a7a328ddefee1d2b1f1b956a946723eec8))
+* **reporting:** avoid double-counting nested callback/tool spans and async guardrails in voice PL ([2a6b75e](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/2a6b75e0a2f467904727c43acc917408f81f95e7))
+* **reporting:** exclude spans starting at/after TTS start from pre-speech overlap ([d734597](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/d7345979681383b34140c7decdd8c00fd0f36657))
+* **reporting:** handle standalone TTS spans and barged-in turns in Perceived Latency ([c632a26](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/c632a266a850439667c654985de6707ac30e2792))
+* **reporting:** resolve ruff lint/format checks and MagicMock guardrail test ([22d3a69](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/22d3a692422acd9ca687824b1a346f647790da71))
+* **sessions:** cache audio preflight checks and retry transient errors ([#469](https://github.com/GoogleCloudPlatform/cxas-scrapi/issues/469)) ([a57667b](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/a57667b39b9fa221923fc85cbc710f8445c0bb1b))
+
+
+### Documentation
+
+* **evals:** fix next_user_turn docstring indentation for strict mkdocs build ([14be090](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/14be0908007b1f502a7d2b630eff7aa899f263c1))
+* **evals:** use a current model in the Naturalness examples ([ac8e255](https://github.com/GoogleCloudPlatform/cxas-scrapi/commit/ac8e2552c136b2995ebc8cc476e57a5230e1e7b0))
+
 ## [1.9.1](https://github.com/GoogleCloudPlatform/cxas-scrapi/compare/v1.9.0...v1.9.1) (2026-09-16)
 
 
