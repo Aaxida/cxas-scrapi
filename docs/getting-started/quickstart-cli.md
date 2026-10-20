@@ -51,7 +51,7 @@ Internal HR Assistant          def456        us
 If you already know the App ID and want its details:
 
 ```sh
-cxas apps get --project-id my-gcp-project --location us --app-name abc123
+cxas apps get --project-id my-gcp-project --location us abc123
 ```
 
 ---
