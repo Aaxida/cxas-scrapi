@@ -1277,3 +1277,55 @@ def test_bidi_session_handler_dtmf_waits_for_turn_completion(
     )
     assert handler.agent_turn_manager.is_agent_done_talking.call_count == 2
     handler._save_and_increment_agent_audio.assert_called_once()
+
+
+def test_agent_turn_manager_skip_playback_wait_waits_for_turn_completed() -> (
+    None
+):
+    """When skip_playback_wait=True, is_agent_done_talking must return False
+    until turn_completed_flag is set, then return True immediately without
+    waiting for audio duration playback.
+    """
+    manager = AgentTurnManager(
+        sample_rate=16000, sample_width=2, skip_playback_wait=True
+    )
+    assert manager.is_agent_done_talking() is False
+
+    # 10 seconds of audio received, but turn_completed has not arrived yet
+    manager.add_audio(b"\x01" * 320000)
+    assert manager.is_agent_done_talking() is False
+
+    # Once turn_completed arrives, returns True immediately without waiting 10s
+    manager.mark_turn_completed()
+    assert manager.is_agent_done_talking() is True
+
+
+@patch("cxas_scrapi.core.sessions.BidiSessionHandler")
+@patch("cxas_scrapi.core.sessions.Sessions._check_audio_requirements")
+@patch("cxas_scrapi.core.sessions.SessionServiceClient")
+def test_run_session_audio_plumbs_skip_playback_wait(
+    mock_client_cls: typing.Any,
+    mock_check_reqs: typing.Any,
+    mock_handler_cls: typing.Any,
+) -> None:
+    """Sessions.run plumbs skip_playback_wait through async_bidi_run_session
+    to BidiSessionHandler.
+    """
+    sessions = Sessions(app_name="projects/p/locations/l/apps/a")
+
+    with patch("cxas_scrapi.core.sessions.AudioTransformer") as MockTransformer:
+        mock_transformer = MockTransformer.return_value
+        mock_transformer.text_to_speech_bytes.return_value = {
+            "audio_bytes": b"tts_hi",
+            "text": "hi",
+        }
+
+        sessions.run(
+            session_id="s1",
+            text="hi",
+            modality=Modality.AUDIO,
+            skip_playback_wait=True,
+        )
+
+    mock_handler_cls.assert_called_once()
+    assert mock_handler_cls.call_args.kwargs["skip_playback_wait"] is True

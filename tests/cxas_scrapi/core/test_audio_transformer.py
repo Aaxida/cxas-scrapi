@@ -139,6 +139,38 @@ class TestAudioTransformer:
             language_code="fr-FR", name="fr-FR-Standard-G"
         )
 
+    @patch("cxas_scrapi.core.audio_transformer.texttospeech")
+    def test_text_to_speech_bytes_defaults_voice_name_from_language_code(
+        self, mock_tts: typing.Any
+    ) -> None:
+        mock_client = MagicMock()
+        mock_tts.TextToSpeechClient.return_value = mock_client
+
+        with io.BytesIO() as wav_io:
+            with wave.open(wav_io, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(b"audio_data")
+            wav_bytes = wav_io.getvalue()
+
+        mock_response = MagicMock()
+        mock_response.audio_content = wav_bytes
+        mock_client.synthesize_speech.return_value = mock_response
+
+        result = self.transformer.text_to_speech_bytes(
+            text="Hola",
+            credentials=MagicMock(),
+            project_id="test-project",
+            voice_config={"language_code": "es-US"},
+        )
+
+        assert result["text"] == "Hola"
+        assert result["audio_bytes"] == b"audio_data"
+        mock_tts.VoiceSelectionParams.assert_called_once_with(
+            language_code="es-US", name="es-US-Standard-A"
+        )
+
     @patch("cxas_scrapi.core.audio_transformer.AudioSegment")
     @patch("cxas_scrapi.core.audio_transformer.texttospeech")
     def test_text_to_speech_bytes_with_burst_noise_success(

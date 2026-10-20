@@ -257,7 +257,7 @@ class AgentTurnManager:
     def is_agent_done_talking(self) -> bool:
         with self.lock:
             if self.skip_playback_wait:
-                return True
+                return self.turn_completed_flag
 
             if not self.interactive:
                 if not self.turn_completed_flag:
@@ -1587,6 +1587,7 @@ class Sessions(Common):
         capture_agent_audio: bool = False,
         background_noise_file: str | None = None,
         bg_noise_snr: float = 15.0,
+        skip_playback_wait: bool = False,
     ) -> typing.Any:
         if self.rate_limiter:
             self.rate_limiter.wait_and_consume()
@@ -1609,6 +1610,7 @@ class Sessions(Common):
             capture_agent_audio=capture_agent_audio,
             background_noise_file=background_noise_file,
             bg_noise_snr=bg_noise_snr,
+            skip_playback_wait=skip_playback_wait,
         )
         return handler.run()
 
@@ -1697,6 +1699,7 @@ class Sessions(Common):
         background_noise_file: str | None = None,
         burst_noise_files: list[str] | None = None,
         voice_config: dict[str, Any] | None = None,
+        skip_playback_wait: bool = False,
     ) -> typing.Any:
         """Sends inputs to a Conversational Agents Session and returns the
         response.
@@ -1905,6 +1908,7 @@ class Sessions(Common):
                     turn_num=turn_num,
                     capture_agent_audio=capture_agent_audio,
                     background_noise_file=background_noise_file,
+                    skip_playback_wait=skip_playback_wait,
                 )
             elif inputs:
                 return self.async_bidi_run_session(
@@ -1913,6 +1917,7 @@ class Sessions(Common):
                     turn_num=turn_num,
                     capture_agent_audio=capture_agent_audio,
                     background_noise_file=background_noise_file,
+                    skip_playback_wait=skip_playback_wait,
                 )
             else:
                 raise ValueError(
