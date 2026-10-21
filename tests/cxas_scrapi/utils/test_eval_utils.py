@@ -15,6 +15,7 @@
 
 """Tests for evaluation utility functions."""
 
+import enum
 import sys
 import tempfile
 import typing
@@ -685,3 +686,47 @@ def test_parse_variables_input_name_value_list() -> None:
         "a": None,
         "b": None,
     }
+
+
+def test_wait_for_run_and_get_results_raw_int_state() -> None:
+    """Raw int states are handled; unknown ints keep polling."""
+    with patch("cxas_scrapi.utils.eval_utils.Evaluations") as mock_evals:
+        client = mock_evals.return_value
+        client.get_evaluation_run.side_effect = [
+            MagicMock(state=5),
+            MagicMock(state=1),
+            MagicMock(state=2),
+        ]
+        client.list_evaluation_results_by_run.return_value = ["result"]
+        utils = EvalUtils(app_name="projects/p/locations/l/apps/a")
+
+        with patch("cxas_scrapi.utils.eval_utils.time.sleep") as mock_sleep:
+            results = utils.wait_for_run_and_get_results("run")
+
+    assert results == ["result"]
+    assert client.get_evaluation_run.call_count == 3
+    assert mock_sleep.call_count == 2
+
+
+def test_wait_for_run_and_get_results_enum_state() -> None:
+    """Enum member states are handled as before."""
+
+    class _State(enum.IntEnum):
+        RUNNING = 1
+        COMPLETED = 2
+
+    with patch("cxas_scrapi.utils.eval_utils.Evaluations") as mock_evals:
+        client = mock_evals.return_value
+        client.get_evaluation_run.side_effect = [
+            MagicMock(state=_State.RUNNING),
+            MagicMock(state=_State.COMPLETED),
+        ]
+        client.list_evaluation_results_by_run.return_value = ["result"]
+        utils = EvalUtils(app_name="projects/p/locations/l/apps/a")
+
+        with patch("cxas_scrapi.utils.eval_utils.time.sleep") as mock_sleep:
+            results = utils.wait_for_run_and_get_results("run")
+
+    assert results == ["result"]
+    assert client.get_evaluation_run.call_count == 2
+    assert mock_sleep.call_count == 1

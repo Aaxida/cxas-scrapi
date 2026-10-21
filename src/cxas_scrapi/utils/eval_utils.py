@@ -1395,7 +1395,15 @@ class EvalUtils(Evaluations):
         start_time = time.time()
         while True:
             run_status = self.eval_client.get_evaluation_run(run_name)
-            if run_status.state.name in ["COMPLETED", "ERROR"]:
+            # The state may be a raw int when the server returns a value the
+            # installed stubs don't define; unknown states keep polling.
+            state = run_status.state
+            if isinstance(state, int) and not hasattr(state, "name"):
+                state_map = {2: "COMPLETED", 3: "ERROR"}
+                state_name = state_map.get(state, f"UNKNOWN_{state}")
+            else:
+                state_name = state.name
+            if state_name in ["COMPLETED", "ERROR"]:
                 break
             if time.time() - start_time > timeout_seconds:
                 raise TimeoutError(f"Evaluation run {run_name} timed out.")
