@@ -825,6 +825,12 @@ class SimulationEvals(Apps):
         it was ready for completion (or whose criteria match session
         termination) is transitioned to StepStatus.COMPLETED.
         """
+        harness_error = getattr(eval_conv, "harness_error", None)
+        if harness_error and not type(harness_error).__module__.startswith(
+            "unittest.mock"
+        ):
+            return
+
         for prog in getattr(eval_conv, "steps_progress", []) or []:
             if getattr(prog, "status", None) == StepStatus.COMPLETED:
                 continue

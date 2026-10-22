@@ -2872,3 +2872,32 @@ def test_reconcile_completed_steps_helper_unit() -> None:
         "Agent ended session via escalation/transfer"
         in prog_escalate.justification
     )
+
+
+def test_reconcile_completed_steps_skips_when_harness_error_present() -> None:
+    """Unit test verifying harness_error prevents false goal completion reconciliation."""
+    reconcile = getattr(SimulationEvals, "_reconcile_completed_steps", None)
+    if reconcile is None:
+        pytest.skip(
+            "SimulationEvals._reconcile_completed_steps not present on this branch"
+        )
+
+    step_ready = Step(goal="G1", success_criteria="C1")
+    prog_ready = StepProgress(
+        step=step_ready,
+        status=StepStatus.IN_PROGRESS,
+        justification="Criteria met and it is now ready for completion.",
+    )
+    conv = MagicMock()
+    conv.harness_error = {
+        "turn": 2,
+        "error_type": "EmptyGeneration",
+        "message": "simulated-user model returned no output",
+        "elapsed_s": 3.0,
+    }
+    conv.steps_progress = [prog_ready]
+
+    reconcile(conv, session_ended=True)
+
+    assert prog_ready.status == StepStatus.IN_PROGRESS
+    assert "(Reconciled" not in prog_ready.justification
