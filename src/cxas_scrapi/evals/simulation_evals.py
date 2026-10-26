@@ -71,7 +71,9 @@ logger = logging.getLogger(__name__)
 
 _FIRST_UTTERANCE = "event: welcome"
 _MAX_TURNS = 30
-_DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+_DEFAULT_SIM_USER_MODEL = "gemini-3.5-flash-lite"
+_DEFAULT_EVAL_MODEL = "gemini-3.5-flash-lite"
+_DEFAULT_GEMINI_MODEL = _DEFAULT_SIM_USER_MODEL
 # How often to re-check whether a finished conversation has been published,
 # which is what the naturalness metric reads perceived latency from.
 _LATENCY_POLL_INTERVAL_S = 5.0
@@ -827,8 +829,8 @@ class SimulationEvals(Apps):
     def simulate_conversation(
         self,
         test_case: dict[str, Any],
-        sim_user_model: str | None = _DEFAULT_GEMINI_MODEL,
-        eval_model: str | None = _DEFAULT_GEMINI_MODEL,
+        sim_user_model: str | None = _DEFAULT_SIM_USER_MODEL,
+        eval_model: str | None = _DEFAULT_EVAL_MODEL,
         session_id: str | None = None,
         console_logging: bool = True,
         modality: str = "text",
@@ -861,8 +863,8 @@ class SimulationEvals(Apps):
                 block. `None` (the default) defers to the test case, so
                 simulations that never declare the metric are unaffected.
         """
-        sim_user_model = sim_user_model or _DEFAULT_GEMINI_MODEL
-        eval_model = eval_model or _DEFAULT_GEMINI_MODEL
+        sim_user_model = sim_user_model or _DEFAULT_SIM_USER_MODEL
+        eval_model = eval_model or _DEFAULT_EVAL_MODEL
         if session_id is None:
             session_id = str(uuid.uuid4())
         naturalness_config = parse_naturalness_config(
@@ -1335,8 +1337,8 @@ class SimulationEvals(Apps):
         test_cases: list[dict[str, Any]],
         runs: int = 1,
         parallel: int = 1,
-        sim_user_model: str | None = _DEFAULT_GEMINI_MODEL,
-        eval_model: str | None = _DEFAULT_GEMINI_MODEL,
+        sim_user_model: str | None = _DEFAULT_SIM_USER_MODEL,
+        eval_model: str | None = _DEFAULT_EVAL_MODEL,
         modality: str = "text",
         verbose: bool = False,
         capture_agent_audio: bool = False,
@@ -1370,8 +1372,8 @@ class SimulationEvals(Apps):
                 Metric. Leave as None to honour each test case's own
                 `naturalness_metric` block.
         """
-        sim_user_model = sim_user_model or _DEFAULT_GEMINI_MODEL
-        eval_model = eval_model or _DEFAULT_GEMINI_MODEL
+        sim_user_model = sim_user_model or _DEFAULT_SIM_USER_MODEL
+        eval_model = eval_model or _DEFAULT_EVAL_MODEL
         if naturalness is not None:
             # Persist on the instance so wrappers that reimplement the
             # aggregation loop still see the override.

@@ -59,7 +59,8 @@ from cxas_scrapi.evals.naturalness import (
 )
 from cxas_scrapi.evals.shadow_html_report import render_shadow_html_report
 from cxas_scrapi.evals.simulation_evals import (
-    _DEFAULT_GEMINI_MODEL,
+    _DEFAULT_EVAL_MODEL,
+    _DEFAULT_SIM_USER_MODEL,
     _FIRST_UTTERANCE,
     _MAX_TURNS,
     Conversation,
@@ -2080,8 +2081,8 @@ class ShadowEvals(Apps):
     def run_shadow_conversation(
         self,
         test_case: ShadowTestCase | dict[str, Any],
-        sim_user_model: str | None = _DEFAULT_GEMINI_MODEL,
-        eval_model: str | None = _DEFAULT_GEMINI_MODEL,
+        sim_user_model: str | None = _DEFAULT_SIM_USER_MODEL,
+        eval_model: str | None = _DEFAULT_EVAL_MODEL,
         session_id: str | None = None,
         console_logging: bool = True,
         modality: str = "audio",
@@ -2108,8 +2109,8 @@ class ShadowEvals(Apps):
         `save_shadow_artifacts`); the report path is then available as
         `conversation.report_path`.
         """
-        sim_user_model = sim_user_model or _DEFAULT_GEMINI_MODEL
-        eval_model = eval_model or _DEFAULT_GEMINI_MODEL
+        sim_user_model = sim_user_model or _DEFAULT_SIM_USER_MODEL
+        eval_model = eval_model or _DEFAULT_EVAL_MODEL
         if session_id is None:
             session_id = str(uuid.uuid4())
 
@@ -2484,8 +2485,8 @@ class ShadowEvals(Apps):
         test_cases: list[ShadowTestCase | dict[str, Any]],
         runs: int = 1,
         parallel: int = 1,
-        sim_user_model: str | None = _DEFAULT_GEMINI_MODEL,
-        eval_model: str | None = _DEFAULT_GEMINI_MODEL,
+        sim_user_model: str | None = _DEFAULT_SIM_USER_MODEL,
+        eval_model: str | None = _DEFAULT_EVAL_MODEL,
         modality: str = "audio",
         verbose: bool = False,
         capture_agent_audio: bool = False,
@@ -2517,8 +2518,8 @@ class ShadowEvals(Apps):
         if naturalness is not None:
             self.naturalness = naturalness
 
-        sim_user_model = sim_user_model or _DEFAULT_GEMINI_MODEL
-        eval_model = eval_model or _DEFAULT_GEMINI_MODEL
+        sim_user_model = sim_user_model or _DEFAULT_SIM_USER_MODEL
+        eval_model = eval_model or _DEFAULT_EVAL_MODEL
 
         validated_cases = [
             ShadowTestCase(**tc) if isinstance(tc, dict) else tc

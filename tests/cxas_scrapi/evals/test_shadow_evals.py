@@ -611,6 +611,7 @@ def test_shadow_evals_single_bidi_stream_interactive(
             single_bidi_stream=True,
             console_logging=False,
         )
+        assert conv.genai_model == "gemini-3.5-flash-lite"
         assert len(conv.turn_logs) == 3
         assert mock_interactive.send_turn.call_count == 3
         # Turn 0: welcome event -> audio_bytes=None
@@ -1546,3 +1547,63 @@ def test_shadow_evals_inactivity_and_interruption_context_turns(
     assert u3 == ""
     assert a3 is None
     assert l3 is None
+
+
+def test_run_shadow_evals_default_models() -> None:
+    shadow_evals = ShadowEvals(
+        app_name="projects/p/locations/us/apps/a",
+        creds=MagicMock(),
+    )
+    shadow_evals._run_single_shadow_job = MagicMock(
+        return_value={"status": "ok"}
+    )
+    test_cases = [
+        ShadowTestCase(
+            conversation_id="conv-1",
+            expectations=["Expectation 1"],
+        )
+    ]
+    results = shadow_evals.run_shadow_evals(
+        test_cases,
+        runs=1,
+        parallel=1,
+        sim_user_model=None,
+        eval_model=None,
+        preflight=False,
+    )
+    assert len(results) == 1
+    shadow_evals._run_single_shadow_job.assert_called_once()
+    call_args = shadow_evals._run_single_shadow_job.call_args[0]
+    assert call_args[3] == "gemini-3.5-flash-lite"
+    assert call_args[4] == "gemini-3.5-flash-lite"
+
+
+def test_run_shadow_conversation_default_models() -> None:
+    shadow_evals = ShadowEvals(
+        app_name="projects/p/locations/us/apps/a",
+        creds=MagicMock(),
+    )
+    shadow_evals.fetch_past_conversation_data = MagicMock(
+        return_value=([], "", None)
+    )
+    tc = ShadowTestCase(
+        conversation_id="conv-1",
+        expectations=["Expectation 1"],
+    )
+    with (
+        patch.object(
+            ShadowUserConversation,
+            "next_user_turn",
+            return_value=("", None, None, None),
+        ),
+        patch.object(shadow_evals, "_evaluate_expectations") as mock_eval_exp,
+    ):
+        conv = shadow_evals.run_shadow_conversation(
+            tc,
+            sim_user_model=None,
+            eval_model=None,
+            console_logging=False,
+        )
+        assert conv.genai_model == "gemini-3.5-flash-lite"
+        mock_eval_exp.assert_called_once()
+        assert mock_eval_exp.call_args[0][2] == "gemini-3.5-flash-lite"

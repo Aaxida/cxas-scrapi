@@ -849,6 +849,45 @@ def test_simulate_conversation_default_max_turns() -> None:
             test_case=test_case, console_logging=False
         )
     assert conv.max_turns == 30
+    assert conv.genai_model == "gemini-3.5-flash-lite"
+
+
+def test_simulate_conversation_default_models() -> None:
+    mock_sessions = MagicMock()
+    mock_response = MagicMock()
+    mock_response.session.name = (
+        "projects/test/locations/us/apps/123-abc/sessions/123"
+    )
+    mock_output = MagicMock()
+    mock_output.text = "Hello"
+    mock_response.outputs = [mock_output]
+    mock_sessions.run.return_value = mock_response
+
+    app_name = "projects/test/locations/us/apps/123-abc"
+    with patch("cxas_scrapi.evals.simulation_evals.GeminiGenerate"):  # noqa: SIM117
+        with patch("cxas_scrapi.core.apps.AgentServiceClient"):
+            simulator = SimulationEvals(app_name=app_name)
+    simulator.sessions_client = mock_sessions
+
+    test_case = {
+        "name": "test_tc_models",
+        "steps": [{"goal": "greet"}],
+    }
+    with (
+        patch.object(
+            LLMUserConversation, "next_user_utterance", return_value=("", {})
+        ),
+        patch.object(simulator, "_evaluate_expectations") as mock_eval_exp,
+    ):
+        conv = simulator.simulate_conversation(
+            test_case=test_case,
+            sim_user_model=None,
+            eval_model=None,
+            console_logging=False,
+        )
+        assert conv.genai_model == "gemini-3.5-flash-lite"
+        mock_eval_exp.assert_called_once()
+        assert mock_eval_exp.call_args[0][2] == "gemini-3.5-flash-lite"
 
 
 def test_simulate_conversation_uses_test_case_max_turns() -> None:
@@ -1677,6 +1716,33 @@ def test_simulation_evals_run_simulations_use_tool_fakes_parallel(
         skip_playback_wait=False,
         single_bidi_stream=False,
     )
+
+
+@patch("cxas_scrapi.evals.simulation_evals.Sessions")
+def test_simulation_evals_run_simulations_default_models(
+    mock_sessions: typing.Any,
+) -> None:
+    app_name = "projects/test/locations/us/apps/123-abc"
+    with patch("cxas_scrapi.evals.simulation_evals.GeminiGenerate"):  # noqa: SIM117
+        with patch("cxas_scrapi.core.apps.AgentServiceClient"):
+            evals = SimulationEvals(app_name=app_name)
+
+    evals._run_single_simulation_job = MagicMock(return_value={"status": "ok"})
+    test_cases = [{"name": "tc1"}]
+
+    results = evals.run_simulations(
+        test_cases=test_cases,
+        runs=1,
+        parallel=1,
+        sim_user_model=None,
+        eval_model=None,
+    )
+
+    assert len(results) == 1
+    evals._run_single_simulation_job.assert_called_once()
+    call_args = evals._run_single_simulation_job.call_args[0]
+    assert call_args[3] == "gemini-3.5-flash-lite"
+    assert call_args[4] == "gemini-3.5-flash-lite"
 
 
 @patch("cxas_scrapi.evals.simulation_evals.Sessions")
