@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Utility for running tests and multi-callback chains for CES agent callbacks."""
+"""Utility for running unit tests and chains for CES agent callbacks."""
 
 from __future__ import annotations
 
@@ -95,10 +95,13 @@ from cxas_scrapi.evals.callback_chain import (
 logger = logging.getLogger(__name__)
 
 __all__ = [
-    "AgentAssertionError",
-    "BenchmarkComparisonReport",
     "CHAIN_LLM_ENV",
     "CHAIN_MODE_ENV",
+    "STATE_REMOVED_SENTINEL",
+    "VALID_CHANNELS",
+    "VALID_MODALITIES",
+    "AgentAssertionError",
+    "BenchmarkComparisonReport",
     "CallbackChainLintFinding",
     "CallbackChainRunner",
     "CallbackEvals",
@@ -112,7 +115,6 @@ __all__ = [
     "LlmStepTrace",
     "MockLlm",
     "ModeDiffReport",
-    "STATE_REMOVED_SENTINEL",
     "SessionExpectation",
     "SessionMetricsSummary",
     "SessionSimulator",
@@ -125,8 +127,6 @@ __all__ = [
     "TurnExpectation",
     "TurnTrace",
     "UsageMetadata",
-    "VALID_CHANNELS",
-    "VALID_MODALITIES",
     "_synthesize_chained_callback_module",
     "build_agent_tool_declarations",
     "build_contents_with_state_updates",
@@ -152,7 +152,7 @@ __all__ = [
 
 
 def _proto_to_dict(obj: Any) -> dict[str, Any] | None:
-    """Converts a proto-plus message (via `type(obj).to_dict(obj)`) or dict to a plain dict."""
+    """Converts a proto-plus message or dict to a plain dict."""
     if obj is None:
         return None
     if isinstance(obj, dict):
@@ -184,7 +184,7 @@ def _extract_app_config_from_proto(
     app_proto: Any,
     explicit_app_config: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Constructs `app_config` from an `App` proto and merges `explicit_app_config`."""
+    """Constructs `app_config` from an `App` proto and explicit config."""
     extracted: dict[str, Any] = {}
 
     if app_proto is not None:
@@ -220,9 +220,9 @@ def _extract_app_config_from_proto(
             if isinstance(ehs, dict) and ehs:
                 extracted["error_handling_settings"] = copy.deepcopy(ehs)
 
-            tz_settings = proto_dict.get("time_zone_settings") or proto_dict.get(
-                "timeZoneSettings"
-            )
+            tz_settings = proto_dict.get(
+                "time_zone_settings"
+            ) or proto_dict.get("timeZoneSettings")
             if isinstance(tz_settings, dict) and tz_settings:
                 extracted["time_zone_settings"] = copy.deepcopy(tz_settings)
 
@@ -244,9 +244,11 @@ def _synthesize_chained_callback_module(
     uses `runner`'s `new_session` and `_ces_session_initialized` mechanism.
     Exposes:
     - `runner`: the configured `CallbackChainRunner` (`raise_on_error=True`)
-    - `patch_globals(**kwargs)` / `PATCHED_GLOBALS`: explicit global patching API
-    - `callbacks[name]`: isolated per-callback `SimpleNamespace` loaded on demand
-    - automatic forwarding of any attributes patched onto the module after import
+    - `patch_globals(**kwargs)` / `PATCHED_GLOBALS`: explicit global patching
+    - `callbacks[name]`: isolated per-callback `SimpleNamespace` loaded on
+      demand
+    - automatic forwarding of any attributes patched onto the module after
+      import
     """
     norm_stage = normalize_stage(stage)
     func_name = STAGE_TO_FUNC_NAME[norm_stage]
@@ -272,13 +274,16 @@ def _synthesize_chained_callback_module(
         "        for spec in runner.get_callbacks(_CHAIN_STAGE):\n"
         "            if spec.name == key:\n"
         "                ns = dict(runner._build_base_namespace({}, []))\n"
-        "                exec(compile(spec.python_code, f'<{spec.name}>', 'exec'), ns)\n"
+        "                exec("
+        "compile(spec.python_code, f'<{spec.name}>', 'exec'), ns)\n"
         "                mod_ns = _types.SimpleNamespace(**{\n"
-        "                    k: v for k, v in ns.items() if not k.startswith('__')\n"
+        "                    k: v for k, v in ns.items() "
+        "if not k.startswith('__')\n"
         "                })\n"
         "                self[key] = mod_ns\n"
         "                return mod_ns\n"
-        "        raise KeyError(f'Unknown callback {key!r} in stage {_CHAIN_STAGE!r}')\n\n"
+        "        raise KeyError("
+        "f'Unknown callback {key!r} in stage {_CHAIN_STAGE!r}')\n\n"
         "callbacks = _CallbackNamespaceMap()\n"
         "_RESERVED_NAMES = frozenset({\n"
         "    _CHAIN_FUNC_NAME, 'runner', 'PATCHED_GLOBALS', 'patch_globals',\n"
@@ -289,29 +294,36 @@ def _synthesize_chained_callback_module(
         "def _collect_patched_globals():\n"
         "    patched = dict(PATCHED_GLOBALS)\n"
         "    for k, v in globals().items():\n"
-        "        if k in _RESERVED_NAMES or k.startswith('_CHAIN_') or k.startswith('_'):\n"
+        "        if ("
+        "k in _RESERVED_NAMES or k.startswith('_CHAIN_') or k.startswith('_')"
+        "):\n"
         "            continue\n"
-        "        if k not in _INITIAL_GLOBALS or _INITIAL_GLOBALS[k] is not v:\n"
+        "        if ("
+        "k not in _INITIAL_GLOBALS or _INITIAL_GLOBALS[k] is not v"
+        "):\n"
         "            patched[k] = v\n"
         "    return patched\n\n"
         f"def {func_name}(*args, **kwargs):\n"
         "    _extra = _collect_patched_globals()\n"
         "    if _CHAIN_STAGE in ('before_agent', 'after_agent'):\n"
         "        ctx = args[0] if args else kwargs['callback_context']\n"
-        "        out, _ = runner.run_stage(_CHAIN_STAGE, ctx, extra_globals=_extra)\n"
+        "        out, _ = runner.run_stage("
+        "_CHAIN_STAGE, ctx, extra_globals=_extra)\n"
         "        return out\n"
         "    if _CHAIN_STAGE == 'before_model':\n"
         "        ctx = args[0] if args else kwargs['callback_context']\n"
         "        req = args[1] if len(args) > 1 else kwargs['llm_request']\n"
         "        out, _ = runner.run_stage(\n"
-        "            'before_model', ctx, llm_request=req, extra_globals=_extra\n"
+        "            'before_model', ctx, "
+        "llm_request=req, extra_globals=_extra\n"
         "        )\n"
         "        return out\n"
         "    if _CHAIN_STAGE == 'after_model':\n"
         "        ctx = args[0] if args else kwargs['callback_context']\n"
         "        resp = args[1] if len(args) > 1 else kwargs['llm_response']\n"
         "        out, _ = runner.run_stage(\n"
-        "            'after_model', ctx, llm_response=resp, extra_globals=_extra\n"
+        "            'after_model', ctx, "
+        "llm_response=resp, extra_globals=_extra\n"
         "        )\n"
         "        return out\n"
         "    if _CHAIN_STAGE == 'before_tool':\n"
@@ -319,10 +331,12 @@ def _synthesize_chained_callback_module(
         "        tool_in = args[1] if len(args) > 1 else kwargs['input']\n"
         "        ctx = (\n"
         "            args[2] if len(args) > 2\n"
-        "            else kwargs.get('tool_context') or kwargs.get('callback_context')\n"
+        "            else kwargs.get('tool_context') "
+        "or kwargs.get('callback_context')\n"
         "        )\n"
         "        out, _ = runner.run_stage(\n"
-        "            'before_tool', ctx, tool=tool, tool_input=tool_in, extra_globals=_extra\n"
+        "            'before_tool', ctx, tool=tool, "
+        "tool_input=tool_in, extra_globals=_extra\n"
         "        )\n"
         "        return out\n"
         "    if _CHAIN_STAGE == 'after_tool':\n"
@@ -330,9 +344,12 @@ def _synthesize_chained_callback_module(
         "        tool_in = args[1] if len(args) > 1 else kwargs['input']\n"
         "        ctx = (\n"
         "            args[2] if len(args) > 2\n"
-        "            else kwargs.get('tool_context') or kwargs.get('callback_context')\n"
+        "            else kwargs.get('tool_context') "
+        "or kwargs.get('callback_context')\n"
         "        )\n"
-        "        tool_resp = args[3] if len(args) > 3 else kwargs['tool_response']\n"
+        "        tool_resp = (\n"
+        "            args[3] if len(args) > 3 else kwargs['tool_response']\n"
+        "        )\n"
         "        out, _ = runner.run_stage(\n"
         "            'after_tool', ctx, tool=tool, tool_input=tool_in,\n"
         "            tool_response=tool_resp, extra_globals=_extra\n"
@@ -353,7 +370,7 @@ class CallbackEvals:
 
     @staticmethod
     def _warn_if_xdist_args(pytest_args: list[str] | None) -> None:
-        """Warns when pytest-xdist worker flags are passed with in-process collection."""
+        """Warns when pytest-xdist worker flags are passed."""
         if not pytest_args:
             return
         for arg in pytest_args:
@@ -367,7 +384,8 @@ class CallbackEvals:
             ):
                 logger.warning(
                     "include_metrics and last_metrics_summaries use in-process "
-                    "turn collection and do not support pytest-xdist workers (%r).",
+                    "turn collection and do not support pytest-xdist workers "
+                    "(%r).",
                     arg,
                 )
                 break
@@ -439,23 +457,45 @@ class CallbackEvals:
 
         all_callbacks = {
             "before_model": getattr(agent, "before_model_callbacks", None),
-            "before_model_callback": getattr(agent, "before_model_callbacks", None),
-            "before_model_callbacks": getattr(agent, "before_model_callbacks", None),
+            "before_model_callback": getattr(
+                agent, "before_model_callbacks", None
+            ),
+            "before_model_callbacks": getattr(
+                agent, "before_model_callbacks", None
+            ),
             "after_model": getattr(agent, "after_model_callbacks", None),
-            "after_model_callback": getattr(agent, "after_model_callbacks", None),
-            "after_model_callbacks": getattr(agent, "after_model_callbacks", None),
+            "after_model_callback": getattr(
+                agent, "after_model_callbacks", None
+            ),
+            "after_model_callbacks": getattr(
+                agent, "after_model_callbacks", None
+            ),
             "before_tool": getattr(agent, "before_tool_callbacks", None),
-            "before_tool_callback": getattr(agent, "before_tool_callbacks", None),
-            "before_tool_callbacks": getattr(agent, "before_tool_callbacks", None),
+            "before_tool_callback": getattr(
+                agent, "before_tool_callbacks", None
+            ),
+            "before_tool_callbacks": getattr(
+                agent, "before_tool_callbacks", None
+            ),
             "after_tool": getattr(agent, "after_tool_callbacks", None),
             "after_tool_callback": getattr(agent, "after_tool_callbacks", None),
-            "after_tool_callbacks": getattr(agent, "after_tool_callbacks", None),
+            "after_tool_callbacks": getattr(
+                agent, "after_tool_callbacks", None
+            ),
             "before_agent": getattr(agent, "before_agent_callbacks", None),
-            "before_agent_callback": getattr(agent, "before_agent_callbacks", None),
-            "before_agent_callbacks": getattr(agent, "before_agent_callbacks", None),
+            "before_agent_callback": getattr(
+                agent, "before_agent_callbacks", None
+            ),
+            "before_agent_callbacks": getattr(
+                agent, "before_agent_callbacks", None
+            ),
             "after_agent": getattr(agent, "after_agent_callbacks", None),
-            "after_agent_callback": getattr(agent, "after_agent_callbacks", None),
-            "after_agent_callbacks": getattr(agent, "after_agent_callbacks", None),
+            "after_agent_callback": getattr(
+                agent, "after_agent_callbacks", None
+            ),
+            "after_agent_callbacks": getattr(
+                agent, "after_agent_callbacks", None
+            ),
         }
         if callback_type not in all_callbacks:
             raise ValueError(
@@ -474,7 +514,11 @@ class CallbackEvals:
         global_specs: list[dict[str, Any]] = []
         if norm_stage in ("before_model", "after_model"):
             global_attr = f"global_{norm_stage}_callbacks"
-            raw_globals = getattr(app_proto, global_attr, None) if app_proto is not None else None
+            raw_globals = (
+                getattr(app_proto, global_attr, None)
+                if app_proto is not None
+                else None
+            )
             if isinstance(raw_globals, Sequence) and not isinstance(
                 raw_globals, (str, bytes)
             ):
@@ -585,7 +629,8 @@ class CallbackEvals:
         """Runs pytest against callback unit tests and chain tests in `app_dir`.
 
         Discovers:
-        1. Per-callback unit tests: `agents/<agent_name>/<type>_callbacks/<callback_name>/test.py`
+        1. Per-callback unit tests:
+           `agents/<agent_name>/<type>_callbacks/<callback_name>/test.py`
            (unless `chain_only=True`).
         2. Multi-callback chain tests (unless `include_chain=False`):
            - `agents/<agent_name>/<type>_callbacks/test_chain.py`
@@ -593,7 +638,8 @@ class CallbackEvals:
         """
         if mode not in ("per_callback", "combined", "both"):
             raise ValueError(
-                f"Invalid mode '{mode}'. Expected 'per_callback', 'combined', or 'both'."
+                f"Invalid mode '{mode}'. Expected 'per_callback', 'combined', "
+                "or 'both'."
             )
         if chain_only and not include_chain:
             raise ValueError(
@@ -667,7 +713,8 @@ class CallbackEvals:
             return pd.DataFrame(columns=cols)
 
         logger.info(
-            f"Found {len(test_files)} callback tests and {len(chain_test_files)} chain tests."
+            f"Found {len(test_files)} callback tests and "
+            f"{len(chain_test_files)} chain tests."
         )
 
         all_results: list[dict[str, Any]] = []
@@ -731,8 +778,9 @@ class CallbackEvals:
                 chain_bootstrap = (
                     "from cxas_scrapi.evals.callback_evals import (\n"
                     "    CHAIN_LLM_ENV, CHAIN_MODE_ENV, CallbackChainRunner,\n"
-                    "    CallbackTrace, ModeDiffReport, SessionSimulator, TurnTrace,\n"
-                    "    AgentAssertionError, MockLlm, SnapshotManager, ToolSpy,\n"
+                    "    CallbackTrace, ModeDiffReport, SessionSimulator,\n"
+                    "    TurnTrace, AgentAssertionError, MockLlm,\n"
+                    "    SnapshotManager, ToolSpy,\n"
                     "    expect_session, expect_stage, expect_turn,\n"
                     ")\n"
                     f"APP_DIR = {abs_app_dir!r}\n"
@@ -839,12 +887,14 @@ class CallbackEvals:
         image_version: ImageVersion = "v1",
         include_info: bool = False,
     ) -> pd.DataFrame:
-        """Runs cross-callback static linter (C011–C019) across agents in `app_dir`.
+        """Runs cross-callback static linter (C011-C019) across `app_dir`.
 
         Returns a DataFrame with columns:
-        `["agent_name", "callback_type", "test_name", "status", "error_message"]`.
-        `ERROR`-severity findings have `status="FAILED"`, while `WARNING` and `INFO`
-        findings have `status="WARNING"` and `status="INFO"` respectively.
+        `["agent_name", "callback_type", "test_name", "status",
+        "error_message"]`.
+        `ERROR`-severity findings have `status="FAILED"`, while `WARNING` and
+        `INFO` findings have `status="WARNING"` and `status="INFO"`
+        respectively.
         """
         self.last_lint_findings.clear()
         agent_pattern = os.path.join(app_dir, "agents", agent_name or "*")
@@ -893,8 +943,8 @@ class CallbackEvals:
                         "test_name": "C019:load_error",
                         "status": "FAILED",
                         "error_message": (
-                            f"[C019] (ERROR) Failed to load callback chain for agent "
-                            f"'{ag_name}': {type(exc).__name__}: {exc}"
+                            "[C019] (ERROR) Failed to load callback chain for "
+                            f"agent '{ag_name}': {type(exc).__name__}: {exc}"
                         ),
                     }
                 )
@@ -912,9 +962,13 @@ class CallbackEvals:
                     {
                         "agent_name": ag_name,
                         "callback_type": f"{f.stage}_callbacks",
-                        "test_name": f"{f.rule_id}:{f.callback_name}:{f.line or 0}",
+                        "test_name": (
+                            f"{f.rule_id}:{f.callback_name}:{f.line or 0}"
+                        ),
                         "status": status,
-                        "error_message": f"[{f.rule_id}] ({f.severity}) {f.message}",
+                        "error_message": (
+                            f"[{f.rule_id}] ({f.severity}) {f.message}"
+                        ),
                     }
                 )
 
@@ -938,22 +992,26 @@ class CallbackEvals:
         image_version: ImageVersion = "v1",
         fixtures_dir: str | Path | None = None,
     ) -> pd.DataFrame:
-        """Runs `compare_modes` (`per_callback` vs `combined`) across agents in `app_dir`.
+        """Runs `compare_modes` (`per_callback` vs `combined`) across `app_dir`.
 
         Returns a DataFrame with columns:
-        `["agent_name", "callback_type", "test_name", "status", "error_message"]`.
+        `["agent_name", "callback_type", "test_name", "status",
+        "error_message"]`.
 
         Status classification (`A2`):
         - `FAILED`: `report.has_diff` is `True` (mode divergence detected).
-        - `ERROR`: One or both modes raised a runtime error (or agent failed to load).
-        - `RISK`: No runtime diff on current input, but static `C012` shared-reference
-          findings or runtime aliasing warnings exist on the stage.
-        - `INCONCLUSIVE`: Synthetic empty input produced no state change, request/input
-          mutation, or override in either mode (and no fixtures were provided).
-        - `PASSED`: Both modes succeeded identically and exercised callback state/output changes
-          (or passed user-supplied fixtures).
+        - `ERROR`: One or both modes raised a runtime error (or agent failed to
+          load).
+        - `RISK`: No runtime diff on current input, but static `C012`
+          shared-reference findings or runtime aliasing warnings exist on the
+          stage.
+        - `INCONCLUSIVE`: Synthetic empty input produced no state change,
+          request/input mutation, or override in either mode (and no fixtures
+          were provided).
+        - `PASSED`: Both modes succeeded identically and exercised callback
+          state/output changes (or passed user-supplied fixtures).
         """
-        from cxas_scrapi.utils.callback_libs import (
+        from cxas_scrapi.utils.callback_libs import (  # noqa: PLC0415
             CallbackContext,
             LlmRequest,
             LlmResponse,
@@ -1130,19 +1188,21 @@ class CallbackEvals:
                     per_tr = report.per_callback_trace
                     comb_tr = report.combined_trace
                     runtime_warnings = list(per_tr.warnings) + [
-                        w
-                        for w in comb_tr.warnings
-                        if w not in per_tr.warnings
+                        w for w in comb_tr.warnings if w not in per_tr.warnings
                     ]
                     risk_msgs = [
-                        f"[{f.rule_id}] {f.callback_name}:{f.line or 0}: {f.message}"
+                        (
+                            f"[{f.rule_id}] {f.callback_name}:{f.line or 0}: "
+                            f"{f.message}"
+                        )
                         for f in c012_findings
                     ] + runtime_warnings
 
                     if report.has_diff:
                         explanations = report.explain()
                         default_div_msg = (
-                            "Mode divergence detected between 'per_callback' and 'combined'."
+                            "Mode divergence detected between 'per_callback' "
+                            "and 'combined'."
                         )
                         rows.append(
                             {
@@ -1157,9 +1217,7 @@ class CallbackEvals:
                                 ),
                             }
                         )
-                    elif (
-                        per_tr.error is not None or comb_tr.error is not None
-                    ):
+                    elif per_tr.error is not None or comb_tr.error is not None:
                         if (
                             per_tr.error is not None
                             and comb_tr.error is not None
@@ -1180,7 +1238,8 @@ class CallbackEvals:
                                 "test_name": test_label,
                                 "status": "ERROR",
                                 "error_message": (
-                                    f"Callback error in {mode_label}: {first_line}"
+                                    f"Callback error in {mode_label}: "
+                                    f"{first_line}"
                                 ),
                             }
                         )
@@ -1213,8 +1272,9 @@ class CallbackEvals:
                                 "test_name": test_label,
                                 "status": "INCONCLUSIVE",
                                 "error_message": (
-                                    "No state change or override observed on synthetic "
-                                    f"empty input; add fixtures under agents/{ag_name}/"
+                                    "No state change or override observed on "
+                                    "synthetic empty input; add fixtures under "
+                                    f"agents/{ag_name}/"
                                     f"compare_fixtures/{stage}/*.json."
                                 ),
                             }
@@ -1227,8 +1287,8 @@ class CallbackEvals:
                                 "test_name": test_label,
                                 "status": "PASSED",
                                 "error_message": (
-                                    "Synthetic input (exercised on default empty input "
-                                    "without user fixtures)"
+                                    "Synthetic input (exercised on default "
+                                    "empty input without user fixtures)"
                                     if is_synthetic
                                     else None
                                 ),
@@ -1275,7 +1335,7 @@ class CallbackEvals:
         return "chain_callbacks"
 
     def _get_callback_name(self, original_file: str) -> str:
-        """Extracts the callback directory name from the agent path when present."""
+        """Extracts the callback directory name from the agent path."""
         parts = Path(original_file).parts
         if "agents" in parts:
             idx = len(parts) - 1 - list(reversed(parts)).index("agents")
@@ -1316,7 +1376,7 @@ class CallbackEvals:
             with open(temp_test_path, "w", encoding="utf-8") as f:
                 f.write(test_content)
 
-            from cxas_scrapi.evals.callback_chain.snapshots import (
+            from cxas_scrapi.evals.callback_chain.snapshots import (  # noqa: PLC0415
                 _UNNAMED_SNAPSHOT_COUNTS,
             )
 
@@ -1446,8 +1506,12 @@ class _TestResultCollector:
 
     @pytest.hookimpl(trylast=True)
     def pytest_runtest_setup(self, item: typing.Any) -> None:
-        from cxas_scrapi.evals.callback_chain import runner as _runner_mod
-        from cxas_scrapi.evals.callback_chain import turn as _turn_mod
+        from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+            runner as _runner_mod,
+        )
+        from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+            turn as _turn_mod,
+        )
 
         cxas_col = getattr(item, "_cxas_collector", None)
         if cxas_col is not None and hasattr(cxas_col, "turn_traces"):
@@ -1469,8 +1533,12 @@ class _TestResultCollector:
     def pytest_runtest_teardown(
         self, item: typing.Any, nextitem: typing.Any
     ) -> None:
-        from cxas_scrapi.evals.callback_chain import runner as _runner_mod
-        from cxas_scrapi.evals.callback_chain import turn as _turn_mod
+        from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+            runner as _runner_mod,
+        )
+        from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+            turn as _turn_mod,
+        )
 
         del item, nextitem
         if self._collector_token is not None:

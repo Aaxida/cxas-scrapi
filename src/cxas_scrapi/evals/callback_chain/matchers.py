@@ -20,18 +20,19 @@ import copy
 import json
 import re
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 from re import Pattern
 from typing import TYPE_CHECKING, Any
 
 from cxas_scrapi.evals.callback_chain.hydration import compute_state_delta
-from cxas_scrapi.evals.callback_chain.lint import CallbackChainLintFinding
 from cxas_scrapi.evals.callback_chain.snapshots import (
     SnapshotManager,
     _extract_active_tools,
     _extract_injected_state_updates,
     _extract_system_instruction_text,
     _find_unresolved_placeholders,
+    serialize_session_snapshot,
+    serialize_stage_snapshot,
+    serialize_turn_snapshot,
 )
 from cxas_scrapi.evals.callback_chain.traces import (
     CallbackTrace,
@@ -40,18 +41,27 @@ from cxas_scrapi.evals.callback_chain.traces import (
     TurnTrace,
 )
 from cxas_scrapi.evals.callback_chain.turn import SessionSimulator
-from cxas_scrapi.utils.callback_libs import LlmResponse
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
+    from cxas_scrapi.evals.callback_chain.lint import CallbackChainLintFinding
     from cxas_scrapi.evals.callback_chain.runner import CallbackChainRunner
+    from cxas_scrapi.utils.callback_libs import LlmResponse
 
 _UNSET: Any = object()
 
 
 def _iter_stage_traces_from_target(
-    target: CallbackTrace | TurnTrace | ModeDiffReport | SessionSimulator | None,
+    target: CallbackTrace
+    | TurnTrace
+    | ModeDiffReport
+    | SessionSimulator
+    | None,
 ) -> list[tuple[str, CallbackTrace]]:
-    """Extracts ordered `(stage_label, CallbackTrace)` pairs from any trace target."""
+    """Extracts ordered `(stage_label, CallbackTrace)` pairs from any trace
+    target.
+    """
     if target is None:
         return []
     if isinstance(target, CallbackTrace):
@@ -68,13 +78,9 @@ def _iter_stage_traces_from_target(
         if target.llm_steps:
             for ls in target.llm_steps:
                 hop_lbl = f"hop#{ls.step_index + 1}"
-                out.append(
-                    (f"{hop_lbl}.before_model", ls.before_model_trace)
-                )
+                out.append((f"{hop_lbl}.before_model", ls.before_model_trace))
                 if ls.after_model_trace is not None:
-                    out.append(
-                        (f"{hop_lbl}.after_model", ls.after_model_trace)
-                    )
+                    out.append((f"{hop_lbl}.after_model", ls.after_model_trace))
         else:
             out.append(("before_model", target.before_model_trace))
             if target.after_model_trace is not None:
@@ -97,7 +103,9 @@ def _iter_stage_traces_from_target(
 
 
 def _values_differ(prev_val: Any, curr_val: Any) -> bool:
-    """Returns True if `prev_val` and `curr_val` differ semantically (ignoring CES int/float coercion)."""
+    """Returns True if `prev_val` and `curr_val` differ semantically (ignoring
+    CES int/float coercion).
+    """
     if isinstance(prev_val, bool) != isinstance(curr_val, bool):
         return True
     if isinstance(prev_val, (int, float)) and isinstance(
@@ -109,16 +117,15 @@ def _values_differ(prev_val: Any, curr_val: Any) -> bool:
     if isinstance(prev_val, dict) and isinstance(curr_val, dict):
         if set(prev_val.keys()) != set(curr_val.keys()):
             return True
-        return any(
-            _values_differ(prev_val[k], curr_val[k]) for k in prev_val
-        )
+        return any(_values_differ(prev_val[k], curr_val[k]) for k in prev_val)
     if isinstance(prev_val, (list, tuple)) and isinstance(
         curr_val, (list, tuple)
     ):
         if len(prev_val) != len(curr_val):
             return True
         return any(
-            _values_differ(a, b) for a, b in zip(prev_val, curr_val)
+            _values_differ(a, b)
+            for a, b in zip(prev_val, curr_val, strict=False)
         )
     return bool(prev_val != curr_val)
 
@@ -155,11 +162,17 @@ def _format_step_state_changes(
 
 
 def _trace_state_lineage(
-    target: CallbackTrace | TurnTrace | ModeDiffReport | SessionSimulator | None,
+    target: CallbackTrace
+    | TurnTrace
+    | ModeDiffReport
+    | SessionSimulator
+    | None,
     *,
     focus_keys: Sequence[str] = (),
 ) -> tuple[list[str], str | None]:
-    """Walks step and tool traces to build state mutation lineage and identify root cause."""
+    """Walks step and tool traces to build state mutation lineage and identify
+    root cause.
+    """
     stage_pairs = _iter_stage_traces_from_target(target)
     history: list[str] = []
     last_mutator_for_focus: str | None = None
@@ -278,21 +291,23 @@ def _trace_state_lineage(
 
 
 def _collect_warnings_and_lint(
-    target: CallbackTrace | TurnTrace | ModeDiffReport | SessionSimulator | None,
+    target: CallbackTrace
+    | TurnTrace
+    | ModeDiffReport
+    | SessionSimulator
+    | None,
     runner: CallbackChainRunner | None = None,
 ) -> tuple[list[str], list[CallbackChainLintFinding]]:
-    """Collects runtime warnings and static lint findings associated with `target`."""
+    """Collects runtime warnings and static lint findings associated with
+    `target`.
+    """
     warnings: list[str] = []
     stage_pairs = _iter_stage_traces_from_target(target)
     for _, st in stage_pairs:
         for w in st.warnings:
             if w not in warnings:
                 warnings.append(w)
-    if isinstance(target, TurnTrace):
-        for w in target.warnings:
-            if w not in warnings:
-                warnings.append(w)
-    elif isinstance(target, SessionSimulator):
+    if isinstance(target, (TurnTrace, SessionSimulator)):
         for w in target.warnings:
             if w not in warnings:
                 warnings.append(w)
@@ -301,9 +316,7 @@ def _collect_warnings_and_lint(
     lint_findings: list[CallbackChainLintFinding] = []
     if eff_runner is not None and hasattr(eff_runner, "lint"):
         try:
-            if isinstance(target, CallbackTrace):
-                lint_findings = eff_runner.lint(target.stage)
-            elif isinstance(target, ModeDiffReport):
+            if isinstance(target, (CallbackTrace, ModeDiffReport)):
                 lint_findings = eff_runner.lint(target.stage)
             else:
                 lint_findings = eff_runner.lint()
@@ -314,7 +327,9 @@ def _collect_warnings_and_lint(
 
 
 class AgentAssertionError(AssertionError):
-    """Self-diagnosing assertion error with callback root-cause and state lineage."""
+    """Self-diagnosing assertion error with callback root-cause and state
+    lineage.
+    """
 
     def __init__(
         self,
@@ -360,9 +375,7 @@ class AgentAssertionError(AssertionError):
 
         sections: list[str] = [message]
         if expected is not None or actual is not None:
-            sections.append(
-                f"  Expected: {expected!r}\n  Actual:   {actual!r}"
-            )
+            sections.append(f"  Expected: {expected!r}\n  Actual:   {actual!r}")
         if self.root_cause_callback:
             sections.append(
                 f"  [Root-Cause Callback]: {self.root_cause_callback}"
@@ -411,7 +424,9 @@ def _analyze_stage_state_mutations(
     trace: CallbackTrace,
     in_callback: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, tuple[Any, Any]], dict[str, Any]]:
-    """Computes `(added, modified, removed)` state keys for `trace` or a specific callback step."""
+    """Computes `(added, modified, removed)` state keys for `trace` or a
+    specific callback step.
+    """
     added: dict[str, Any] = {}
     modified: dict[str, tuple[Any, Any]] = {}
     removed: dict[str, Any] = {}
@@ -421,7 +436,9 @@ def _analyze_stage_state_mutations(
         for step in trace.steps:
             curr_state = step.state_after
             if step.name == in_callback:
-                for k in sorted(set(prev_state.keys()) | set(curr_state.keys())):
+                for k in sorted(
+                    set(prev_state.keys()) | set(curr_state.keys())
+                ):
                     if k == "_session":
                         continue
                     in_prev = k in prev_state
@@ -435,7 +452,8 @@ def _analyze_stage_state_mutations(
             prev_state = copy.deepcopy(curr_state)
         return added, modified, removed
 
-    # Stage-wide comparison across initial_state -> final_state, supplemented by per-step tracking
+    # Stage-wide comparison across initial_state -> final_state, supplemented by
+    # per-step tracking
     init_s = trace.initial_state
     final_s = trace.final_state
     for k in sorted(set(init_s.keys()) | set(final_s.keys())):
@@ -454,7 +472,9 @@ def _analyze_stage_state_mutations(
 
 
 class StageExpectation:
-    """Fluent Jest-style assertion wrapper for a single stage (`CallbackTrace` or `ModeDiffReport`)."""
+    """Fluent Jest-style assertion wrapper for a single stage (`CallbackTrace`
+    or `ModeDiffReport`).
+    """
 
     def __init__(
         self,
@@ -484,7 +504,8 @@ class StageExpectation:
             self._override_value = target.override_response
         else:
             raise TypeError(
-                f"expect_stage() requires a CallbackTrace, (override, CallbackTrace) tuple, "
+                "expect_stage() requires a CallbackTrace, (override, "
+                "CallbackTrace) tuple, "
                 f"or ModeDiffReport; got {type(target).__name__}."
             )
 
@@ -555,15 +576,17 @@ class StageExpectation:
         return self._positive_self if self._positive_self is not None else self
 
     def to_succeed(self) -> StageExpectation:
-        """Asserts that no callback in the stage raised an error (`trace.error is None`)."""
+        """Asserts that no callback in the stage raised an error (`trace.error
+        is None`).
+        """
         err = self._trace.error
         passed = err is None
+        failed_cb = self._trace.failed_callback or self._trace.culprit_callback
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to succeed without error, "
-                f"but callback '{self._trace.failed_callback or self._trace.culprit_callback}' "
-                f"failed with:\n{err}"
+                f"Expected stage '{self._trace.stage}' to succeed without "
+                f"error, but callback '{failed_cb}' failed with:\n{err}"
             ),
             neg_msg=(
                 f"Expected stage '{self._trace.stage}' NOT to succeed, "
@@ -582,17 +605,16 @@ class StageExpectation:
         outcome: str | None = None,
         message_contains: str | None = None,
     ) -> StageExpectation:
-        """Asserts that the stage encountered an error matching the specified criteria."""
+        """Asserts that the stage encountered an error matching the specified
+        criteria.
+        """
         err = self._trace.error
         actual_cb = self._trace.failed_callback or self._trace.culprit_callback
         actual_outcome = self._trace.error_outcome
 
         passed = err is not None
         if passed and with_callback is not None:
-            passed = (
-                actual_cb == with_callback
-                or self._trace.failed_callback == with_callback
-            )
+            passed = with_callback in (actual_cb, self._trace.failed_callback)
         if passed and outcome is not None:
             passed = actual_outcome == outcome
         if passed and message_contains is not None:
@@ -602,13 +624,16 @@ class StageExpectation:
             passed,
             pos_msg=(
                 f"Expected stage '{self._trace.stage}' to fail "
-                f"(callback={with_callback!r}, outcome={outcome!r}, message_contains={message_contains!r}), "
-                f"but got failed_callback={actual_cb!r}, outcome={actual_outcome!r}, "
+                f"(callback={with_callback!r}, outcome={outcome!r}, "
+                f"message_contains={message_contains!r}), "
+                f"but got failed_callback={actual_cb!r}, "
+                f"outcome={actual_outcome!r}, "
                 f"error={err.splitlines()[0] if err else None!r}."
             ),
             neg_msg=(
                 f"Expected stage '{self._trace.stage}' NOT to fail with "
-                f"(callback={with_callback!r}, outcome={outcome!r}, message_contains={message_contains!r}), "
+                f"(callback={with_callback!r}, outcome={outcome!r}, "
+                f"message_contains={message_contains!r}), "
                 f"but it did."
             ),
             expected={
@@ -652,11 +677,13 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to execute callbacks {flat_names!r} "
+                f"Expected stage '{self._trace.stage}' to execute callbacks "
+                f"{flat_names!r} "
                 f"(exact_order={exact_order}), but executed {actual!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' NOT to execute callbacks {flat_names!r} "
+                f"Expected stage '{self._trace.stage}' NOT to execute "
+                f"callbacks {flat_names!r} "
                 f"(exact_order={exact_order}), but executed {actual!r}."
             ),
             expected=flat_names,
@@ -689,13 +716,15 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to skip callbacks {flat_names!r}, "
+                f"Expected stage '{self._trace.stage}' to skip callbacks "
+                f"{flat_names!r}, "
                 f"but skipped={self._trace.skipped_callbacks!r}, "
                 f"disabled={self._trace.disabled_callbacks!r} "
                 f"(executed={self._trace.executed_callbacks!r})."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' NOT to skip callbacks {flat_names!r}, "
+                f"Expected stage '{self._trace.stage}' NOT to skip callbacks "
+                f"{flat_names!r}, "
                 f"but they were in skipped/disabled {skipped_all!r}."
             ),
             expected=flat_names,
@@ -708,7 +737,9 @@ class StageExpectation:
         *,
         by: str | None = None,
     ) -> StageExpectation:
-        """Asserts that the stage chain short-circuited (optionally at a specific callback)."""
+        """Asserts that the stage chain short-circuited (optionally at a
+        specific callback).
+        """
         eff_by = at_callback if at_callback is not None else by
         passed = bool(self._trace.short_circuited)
         if passed and eff_by is not None:
@@ -736,7 +767,9 @@ class StageExpectation:
     to_short_circuit = to_have_short_circuited
 
     def to_continue(self) -> StageExpectation:
-        """Asserts that the stage did NOT short-circuit and encountered no errors."""
+        """Asserts that the stage did NOT short-circuit and encountered no
+        errors.
+        """
         passed = (
             not self._trace.short_circuited
             and self._trace.override_response is None
@@ -745,12 +778,16 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to continue without short-circuiting "
-                f"or failing, but short_circuited={self._trace.short_circuited} "
-                f"(by={self._trace.short_circuited_by!r}), error={self._trace.error!r}."
+                f"Expected stage '{self._trace.stage}' to continue without "
+                "short-circuiting "
+                "or failing, but "
+                f"short_circuited={self._trace.short_circuited} "
+                f"(by={self._trace.short_circuited_by!r}), "
+                f"error={self._trace.error!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' NOT to continue cleanly, "
+                f"Expected stage '{self._trace.stage}' NOT to continue "
+                "cleanly, "
                 "but it completed without short-circuiting or error."
             ),
             expected={"short_circuited": False, "error": None},
@@ -767,7 +804,9 @@ class StageExpectation:
         self,
         expected: Any = _UNSET,
     ) -> StageExpectation:
-        """Asserts that the stage returned an override value (optionally matching `expected`)."""
+        """Asserts that the stage returned an override value (optionally
+        matching `expected`).
+        """
         actual = (
             self._override_value
             if self._override_value is not None
@@ -782,17 +821,18 @@ class StageExpectation:
         else:
             passed = actual == expected
 
+        match_clause = (
+            f" matching {expected!r}" if expected is not _UNSET else ""
+        )
         return self._check(
             passed,
             pos_msg=(
                 f"Expected stage '{self._trace.stage}' to return override"
-                f"{f' matching {expected!r}' if expected is not _UNSET else ''}, "
-                f"but override was {actual!r}."
+                f"{match_clause}, but override was {actual!r}."
             ),
             neg_msg=(
                 f"Expected stage '{self._trace.stage}' NOT to return override"
-                f"{f' matching {expected!r}' if expected is not _UNSET else ''}, "
-                f"but override was {actual!r}."
+                f"{match_clause}, but override was {actual!r}."
             ),
             expected="<non-None override>" if expected is _UNSET else expected,
             actual=actual,
@@ -804,7 +844,9 @@ class StageExpectation:
         /,
         **expected_kv: Any,
     ) -> StageExpectation:
-        """Asserts that `trace.final_state` contains the expected key-value pairs."""
+        """Asserts that `trace.final_state` contains the expected key-value
+        pairs.
+        """
         expected: dict[str, Any] = {}
         if _expected_dict is not None:
             expected.update(dict(_expected_dict))
@@ -823,11 +865,13 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' final_state to match {expected!r}, "
+                f"Expected stage '{self._trace.stage}' final_state to match "
+                f"{expected!r}, "
                 f"but found mismatches: {mismatches!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' final_state NOT to match {expected!r}, "
+                f"Expected stage '{self._trace.stage}' final_state NOT to "
+                f"match {expected!r}, "
                 f"but all keys matched: {actual_subset!r}."
             ),
             expected=expected,
@@ -840,28 +884,30 @@ class StageExpectation:
         key: str,
         expected_value: Any = _UNSET,
     ) -> StageExpectation:
-        """Asserts that `key` is present in `trace.final_state` (optionally with `expected_value`)."""
+        """Asserts that `key` is present in `trace.final_state` (optionally with
+        `expected_value`).
+        """
         if expected_value is _UNSET:
             passed = key in self._trace.final_state
             exp_repr: Any = f"key {key!r} present"
         else:
-            passed = (
-                key in self._trace.final_state
-                and not _values_differ(
-                    self._trace.final_state[key], expected_value
-                )
+            passed = key in self._trace.final_state and not _values_differ(
+                self._trace.final_state[key], expected_value
             )
             exp_repr = {key: expected_value}
+        val_clause = (
+            f" == {expected_value!r}" if expected_value is not _UNSET else ""
+        )
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' final_state to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected stage '{self._trace.stage}' final_state to have "
+                f"{key!r}{val_clause}, "
                 f"but got {self._trace.final_state.get(key, '<MISSING>')!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' final_state NOT to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected stage '{self._trace.stage}' final_state NOT to "
+                f"have {key!r}{val_clause}, "
                 f"but it was {self._trace.final_state.get(key, '<MISSING>')!r}."
             ),
             expected=exp_repr,
@@ -875,13 +921,13 @@ class StageExpectation:
         in_callback: str | None = None,
         **expected_kv: Any,
     ) -> StageExpectation:
-        """Asserts that the specified existing state keys were modified during the stage."""
+        """Asserts that the specified existing state keys were modified during
+        the stage.
+        """
         added, modified, removed = _analyze_stage_state_mutations(
             self._trace, in_callback=in_callback
         )
-        target_keys = list(keys) + [
-            k for k in expected_kv if k not in keys
-        ]
+        target_keys = list(keys) + [k for k in expected_kv if k not in keys]
         if not target_keys:
             passed = bool(modified or added or removed)
         elif self._negated:
@@ -899,7 +945,8 @@ class StageExpectation:
 
         cb_scope = f" in callback {in_callback!r}" if in_callback else ""
         cb_missing_note = (
-            f" Note: callback {in_callback!r} did not execute in stage '{self._trace.stage}' "
+            f" Note: callback {in_callback!r} did not execute in stage "
+            f"'{self._trace.stage}' "
             f"(executed={self._trace.executed_callbacks!r})."
             if in_callback is not None
             and in_callback not in self._trace.executed_callbacks
@@ -908,18 +955,23 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} to modify state keys "
+                f"Expected stage '{self._trace.stage}'{cb_scope} to modify "
+                "state keys "
                 f"{target_keys or '<any>'!r}"
                 f"{f' to {expected_kv!r}' if expected_kv else ''}, "
                 f"but modified={ {k: v[1] for k, v in modified.items()}!r} "
-                f"(added={list(added.keys())!r}, removed={list(removed.keys())!r}).{cb_missing_note}"
+                f"(added={list(added.keys())!r}, "
+                f"removed={list(removed.keys())!r}).{cb_missing_note}"
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to modify state keys "
+                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to "
+                "modify state keys "
                 f"{target_keys or '<any>'!r}, "
                 f"but modified={ {k: v[1] for k, v in modified.items()}!r}."
             ),
-            expected=expected_kv if expected_kv else (target_keys or "<modified state>"),
+            expected=expected_kv
+            if expected_kv
+            else (target_keys or "<modified state>"),
             actual={k: v[1] for k, v in modified.items()},
             focus_state_keys=target_keys,
         )
@@ -930,13 +982,13 @@ class StageExpectation:
         in_callback: str | None = None,
         **expected_kv: Any,
     ) -> StageExpectation:
-        """Asserts that the specified state keys were newly added during the stage."""
+        """Asserts that the specified state keys were newly added during the
+        stage.
+        """
         added, modified, removed = _analyze_stage_state_mutations(
             self._trace, in_callback=in_callback
         )
-        target_keys = list(keys) + [
-            k for k in expected_kv if k not in keys
-        ]
+        target_keys = list(keys) + [k for k in expected_kv if k not in keys]
         if not target_keys:
             passed = bool(added)
         elif self._negated:
@@ -954,7 +1006,8 @@ class StageExpectation:
 
         cb_scope = f" in callback {in_callback!r}" if in_callback else ""
         cb_missing_note = (
-            f" Note: callback {in_callback!r} did not execute in stage '{self._trace.stage}' "
+            f" Note: callback {in_callback!r} did not execute in stage "
+            f"'{self._trace.stage}' "
             f"(executed={self._trace.executed_callbacks!r})."
             if in_callback is not None
             and in_callback not in self._trace.executed_callbacks
@@ -963,16 +1016,21 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} to add state keys "
+                f"Expected stage '{self._trace.stage}'{cb_scope} to add state "
+                "keys "
                 f"{target_keys or '<any>'!r}"
                 f"{f' with {expected_kv!r}' if expected_kv else ''}, "
-                f"but added={added!r} (modified={list(modified.keys())!r}, removed={list(removed.keys())!r}).{cb_missing_note}"
+                f"but added={added!r} (modified={list(modified.keys())!r}, "
+                f"removed={list(removed.keys())!r}).{cb_missing_note}"
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to add state keys "
+                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to add "
+                "state keys "
                 f"{target_keys or '<any>'!r}, but added={added!r}."
             ),
-            expected=expected_kv if expected_kv else (target_keys or "<added state>"),
+            expected=expected_kv
+            if expected_kv
+            else (target_keys or "<added state>"),
             actual=added,
             focus_state_keys=target_keys,
         )
@@ -982,7 +1040,9 @@ class StageExpectation:
         *keys: str,
         in_callback: str | None = None,
     ) -> StageExpectation:
-        """Asserts that the specified state keys were removed during the stage."""
+        """Asserts that the specified state keys were removed during the
+        stage.
+        """
         added, modified, removed = _analyze_stage_state_mutations(
             self._trace, in_callback=in_callback
         )
@@ -996,7 +1056,8 @@ class StageExpectation:
 
         cb_scope = f" in callback {in_callback!r}" if in_callback else ""
         cb_missing_note = (
-            f" Note: callback {in_callback!r} did not execute in stage '{self._trace.stage}' "
+            f" Note: callback {in_callback!r} did not execute in stage "
+            f"'{self._trace.stage}' "
             f"(executed={self._trace.executed_callbacks!r})."
             if in_callback is not None
             and in_callback not in self._trace.executed_callbacks
@@ -1005,14 +1066,18 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} to remove state keys "
+                f"Expected stage '{self._trace.stage}'{cb_scope} to remove "
+                "state keys "
                 f"{target_keys or '<any>'!r}, "
                 f"but removed={list(removed.keys())!r} "
-                f"(added={list(added.keys())!r}, modified={list(modified.keys())!r}).{cb_missing_note}"
+                f"(added={list(added.keys())!r}, "
+                f"modified={list(modified.keys())!r}).{cb_missing_note}"
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to remove state keys "
-                f"{target_keys or '<any>'!r}, but removed={list(removed.keys())!r}."
+                f"Expected stage '{self._trace.stage}'{cb_scope} NOT to "
+                "remove state keys "
+                f"{target_keys or '<any>'!r}, but "
+                f"removed={list(removed.keys())!r}."
             ),
             expected=target_keys or "<removed state>",
             actual=list(removed.keys()),
@@ -1020,7 +1085,9 @@ class StageExpectation:
         )
 
     def to_preserve_state(self) -> StageExpectation:
-        """Asserts that `trace.final_state` equals `trace.initial_state` (no state mutations)."""
+        """Asserts that `trace.final_state` equals `trace.initial_state` (no
+        state mutations).
+        """
         delta = compute_state_delta(
             self._trace.initial_state, self._trace.final_state
         )
@@ -1028,11 +1095,13 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to preserve session state unchanged, "
+                f"Expected stage '{self._trace.stage}' to preserve session "
+                "state unchanged, "
                 f"but state delta was {delta!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' NOT to preserve session state, "
+                f"Expected stage '{self._trace.stage}' NOT to preserve "
+                "session state, "
                 "but no state keys were modified."
             ),
             expected={},
@@ -1050,7 +1119,9 @@ class StageExpectation:
         with_status: int | None = None,
         times: int | None = None,
     ) -> StageExpectation:
-        """Asserts that callbacks in this stage invoked `tools.<tool_name>(...)`."""
+        """Asserts that callbacks in this stage invoked
+        `tools.<tool_name>(...)`.
+        """
         matching_calls = [
             c
             for c in self._trace.tool_calls
@@ -1089,7 +1160,9 @@ class StageExpectation:
             matching_calls = [
                 c
                 for c in matching_calls
-                if not _subset_mismatches(with_args, _extract_mock_call_kwargs(c))
+                if not _subset_mismatches(
+                    with_args, _extract_mock_call_kwargs(c)
+                )
             ]
         if partial_args is not None:
             matching_calls = [
@@ -1104,20 +1177,26 @@ class StageExpectation:
         else:
             passed = len(matching_calls) >= 1
 
+        status_clause = (
+            f" with status {with_status!r}" if with_status is not None else ""
+        )
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to call mock tool {tool_name!r}"
+                f"Expected stage '{self._trace.stage}' to call mock tool "
+                f"{tool_name!r}"
                 f"{f' with args {dict(with_args)!r}' if with_args else ''}"
                 f"{f' with source {with_source!r}' if with_source else ''}"
-                f"{f' with status {with_status!r}' if with_status is not None else ''}"
+                f"{status_clause}"
                 f"{f' exactly {times} time(s)' if times is not None else ''}, "
                 f"but recorded tool calls were {self._trace.tool_calls!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' NOT to call mock tool {tool_name!r}"
+                f"Expected stage '{self._trace.stage}' NOT to call mock tool "
+                f"{tool_name!r}"
                 f"{f' with args {dict(with_args)!r}' if with_args else ''}, "
-                f"but it matched {len(matching_calls)} call(s): {matching_calls!r}."
+                f"but it matched {len(matching_calls)} call(s): "
+                f"{matching_calls!r}."
             ),
             expected={
                 "tool": tool_name,
@@ -1132,17 +1211,21 @@ class StageExpectation:
     to_have_called_tool = to_call_mock_tool
 
     def to_have_no_warnings(self) -> StageExpectation:
-        """Asserts that no runtime warnings (e.g. state aliasing hazards) were emitted."""
+        """Asserts that no runtime warnings (e.g. state aliasing hazards) were
+        emitted.
+        """
         warns = list(self._trace.warnings)
         passed = len(warns) == 0
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{self._trace.stage}' to have no runtime warnings, "
+                f"Expected stage '{self._trace.stage}' to have no runtime "
+                "warnings, "
                 f"but found {len(warns)} warning(s): {warns!r}."
             ),
             neg_msg=(
-                f"Expected stage '{self._trace.stage}' to emit runtime warnings, "
+                f"Expected stage '{self._trace.stage}' to emit runtime "
+                "warnings, "
                 "but none were recorded."
             ),
             expected=[],
@@ -1154,11 +1237,15 @@ class StageExpectation:
         *,
         ignore_codes: Sequence[str] = (),
     ) -> StageExpectation:
-        """Asserts that `runner.lint(stage)` produces zero findings (excluding `ignore_codes`)."""
+        """Asserts that `runner.lint(stage)` produces zero findings (excluding
+        `ignore_codes`).
+        """
         if self._runner is None:
             raise AgentAssertionError(
-                "to_be_lint_clean() requires a runner reference. Pass `runner=runner` "
-                "to `expect_stage(trace, runner=runner)` or run the stage via `runner.run_stage(...)`."
+                "to_be_lint_clean() requires a runner reference. Pass "
+                "`runner=runner` "
+                "to `expect_stage(trace, runner=runner)` or run the stage via "
+                "`runner.run_stage(...)`."
             )
         ignore_set = set(ignore_codes)
         all_findings = self._runner.lint(self._trace.stage)
@@ -1189,11 +1276,14 @@ class StageExpectation:
         )
 
     def to_be_mode_consistent(self) -> StageExpectation:
-        """Asserts that `per_callback` and `combined` execution modes produce identical results."""
+        """Asserts that `per_callback` and `combined` execution modes produce
+        identical results.
+        """
         if self._diff_report is None:
             raise AgentAssertionError(
                 "to_be_mode_consistent() requires a ModeDiffReport. "
-                "Use `expect_stage(runner.compare_stage_modes(stage, initial_state=...)).to_be_mode_consistent()`."
+                "Use `expect_stage(runner.compare_stage_modes(stage, "
+                "initial_state=...)).to_be_mode_consistent()`."
             )
         report = self._diff_report
         passed = not report.has_diff
@@ -1201,15 +1291,18 @@ class StageExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected stage '{report.stage}' to be mode-consistent between "
+                f"Expected stage '{report.stage}' to be mode-consistent "
+                "between "
                 f"'per_callback' and 'combined', but divergence was detected:\n"
                 f"  state_diffs: {report.state_diffs!r}\n"
                 f"  response_diff: {report.response_diff!r}\n"
                 f"  explanations: {explanations!r}"
             ),
             neg_msg=(
-                f"Expected stage '{report.stage}' to diverge between 'per_callback' "
-                "and 'combined' modes, but both modes produced identical results."
+                f"Expected stage '{report.stage}' to diverge between "
+                "'per_callback' "
+                "and 'combined' modes, but both modes produced identical "
+                "results."
             ),
             expected={"has_diff": False},
             actual={
@@ -1227,32 +1320,26 @@ class StageExpectation:
         snapshot_dir: str | Path | None = None,
         update_snapshots: bool | None = None,
     ) -> StageExpectation:
-        """Asserts that the deterministic stage snapshot matches the stored `.snap.json` entry."""
-        eff_dir = snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        """Asserts that the deterministic stage snapshot matches the stored
+        `.snap.json` entry.
+        """
+        eff_dir = (
+            snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        )
         eff_upd = (
             update_snapshots
             if update_snapshots is not None
             else self._update_snapshots
         )
-        mgr = SnapshotManager(
-            snapshot_dir=eff_dir, update_snapshots=eff_upd
-        )
+        mgr = SnapshotManager(snapshot_dir=eff_dir, update_snapshots=eff_upd)
         target_obj: CallbackTrace | ModeDiffReport = (
             self._diff_report if self._diff_report is not None else self._trace
         )
         if not self._negated:
-            mgr.match_stage(
-                target_obj, name=name, update_snapshots=eff_upd
-            )
+            mgr.match_stage(target_obj, name=name, update_snapshots=eff_upd)
             return (
-                self._positive_self
-                if self._positive_self is not None
-                else self
+                self._positive_self if self._positive_self is not None else self
             )
-
-        from cxas_scrapi.evals.callback_chain.snapshots import (
-            serialize_stage_snapshot,
-        )
 
         payload = serialize_stage_snapshot(target_obj)
         exists_on_disk, matches_expected, _, _ = mgr.check_matches_readonly(
@@ -1260,22 +1347,23 @@ class StageExpectation:
         )
         if not exists_on_disk:
             raise AgentAssertionError(
-                f"Cannot assert `.not_.to_match_snapshot({name!r})` when no stored snapshot exists on disk.",
+                (
+                    f"Cannot assert `.not_.to_match_snapshot({name!r})` when "
+                    "no "
+                    "stored snapshot exists on disk."
+                ),
                 trace=target_obj,
                 runner=self._runner,
             )
         if matches_expected:
             raise AgentAssertionError(
-                f"Expected stage '{self._trace.stage}' NOT to match snapshot {name!r}, "
+                f"Expected stage '{self._trace.stage}' NOT to match snapshot "
+                f"{name!r}, "
                 "but it matched identically.",
                 trace=target_obj,
                 runner=self._runner,
             )
-        return (
-            self._positive_self
-            if self._positive_self is not None
-            else self
-        )
+        return self._positive_self if self._positive_self is not None else self
 
 
 class TurnExpectation:
@@ -1303,7 +1391,8 @@ class TurnExpectation:
             self._response = turn.final_response
         else:
             raise TypeError(
-                f"expect_turn() requires a TurnTrace or (LlmResponse, TurnTrace) tuple; "
+                "expect_turn() requires a TurnTrace or (LlmResponse, "
+                "TurnTrace) tuple; "
                 f"got {type(turn).__name__}."
             )
         self._runner: CallbackChainRunner | None = runner or getattr(
@@ -1387,13 +1476,23 @@ class TurnExpectation:
                     runner=self._runner,
                 )
             return steps
-        if not isinstance(hop, int) or isinstance(hop, bool) or hop == 0 or hop < -1:
+        if (
+            not isinstance(hop, int)
+            or isinstance(hop, bool)
+            or hop == 0
+            or hop < -1
+        ):
             raise ValueError(
-                f"LLM hop index must be 1-based (hop >= 1) or -1 for the last hop, got {hop!r}."
+                "LLM hop index must be 1-based (hop >= 1) or -1 for the last "
+                f"hop, got {hop!r}."
             )
         if not steps:
             raise AgentAssertionError(
-                f"Requested LLM hop {hop}, but no LLM hops were recorded on this TurnTrace.",
+                (
+                    f"Requested LLM hop {hop}, but no LLM hops were recorded "
+                    "on "
+                    "this TurnTrace."
+                ),
                 trace=self._turn,
                 runner=self._runner,
             )
@@ -1401,7 +1500,10 @@ class TurnExpectation:
             return [steps[-1]]
         if hop > len(steps):
             raise AgentAssertionError(
-                f"Requested 1-based LLM hop {hop}, but turn only recorded {len(steps)} LLM hop(s).",
+                (
+                    f"Requested 1-based LLM hop {hop}, but turn only recorded "
+                    f"{len(steps)} LLM hop(s)."
+                ),
                 trace=self._turn,
                 expected=f"hop <= {len(steps)}",
                 actual=len(steps),
@@ -1411,16 +1513,21 @@ class TurnExpectation:
 
     # 1. Lifecycle & Outcome matchers
     def to_succeed(self) -> TurnExpectation:
-        """Asserts that the turn completed without any callback, tool, or LLM errors."""
+        """Asserts that the turn completed without any callback, tool, or LLM
+        errors.
+        """
         err = self._turn.error
         passed = err is None
         return self._check(
             passed,
             pos_msg=(
                 f"Expected turn to succeed without error, but it failed at "
-                f"stage={self._turn.failed_stage!r}, tool={self._turn.failed_tool!r}:\n{err}"
+                f"stage={self._turn.failed_stage!r}, "
+                f"tool={self._turn.failed_tool!r}:\n{err}"
             ),
-            neg_msg="Expected turn NOT to succeed, but it completed with no errors.",
+            neg_msg=(
+                "Expected turn NOT to succeed, but it completed with no errors."
+            ),
             expected=None,
             actual=err.splitlines()[0] if err else None,
         )
@@ -1434,7 +1541,9 @@ class TurnExpectation:
         at_tool: str | None = None,
         message_contains: str | None = None,
     ) -> TurnExpectation:
-        """Asserts that the turn failed matching the optional stage, tool, and error substring."""
+        """Asserts that the turn failed matching the optional stage, tool, and
+        error substring.
+        """
         err = self._turn.error
         passed = err is not None
         if passed and at_stage is not None:
@@ -1447,13 +1556,16 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected turn to fail (at_stage={at_stage!r}, at_tool={at_tool!r}, "
+                f"Expected turn to fail (at_stage={at_stage!r}, "
+                f"at_tool={at_tool!r}, "
                 f"message_contains={message_contains!r}), but got "
-                f"failed_stage={self._turn.failed_stage!r}, failed_tool={self._turn.failed_tool!r}, "
+                f"failed_stage={self._turn.failed_stage!r}, "
+                f"failed_tool={self._turn.failed_tool!r}, "
                 f"error={err.splitlines()[0] if err else None!r}."
             ),
             neg_msg=(
-                f"Expected turn NOT to fail with (at_stage={at_stage!r}, at_tool={at_tool!r}, "
+                f"Expected turn NOT to fail with (at_stage={at_stage!r}, "
+                f"at_tool={at_tool!r}, "
                 f"message_contains={message_contains!r}), but it did."
             ),
             expected={
@@ -1474,7 +1586,9 @@ class TurnExpectation:
         *callback_names: str | Sequence[str],
         stage: str | None = None,
     ) -> TurnExpectation:
-        """Asserts that all specified callbacks executed during the turn (optionally within `stage`)."""
+        """Asserts that all specified callbacks executed during the turn
+        (optionally within `stage`).
+        """
         flat_names: list[str] = []
         for item in callback_names:
             if isinstance(item, str):
@@ -1504,11 +1618,13 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected turn to have executed callback(s) {flat_names!r}{stage_suffix}, "
+                "Expected turn to have executed callback(s) "
+                f"{flat_names!r}{stage_suffix}, "
                 f"but executed callbacks were {executed!r}."
             ),
             neg_msg=(
-                f"Expected turn NOT to have executed callback(s) {flat_names!r}{stage_suffix}, "
+                "Expected turn NOT to have executed callback(s) "
+                f"{flat_names!r}{stage_suffix}, "
                 f"but executed callbacks were {executed!r}."
             ),
             expected=flat_names,
@@ -1522,7 +1638,9 @@ class TurnExpectation:
         *,
         by: str | None = None,
     ) -> TurnExpectation:
-        """Asserts that the turn was short-circuited at `stage` (optionally by `callback_name`)."""
+        """Asserts that the turn was short-circuited at `stage` (optionally by
+        `callback_name`).
+        """
         eff_cb = callback_name if callback_name is not None else by
         short_circuited_stages = [
             (st.stage, st.short_circuited_by)
@@ -1573,7 +1691,9 @@ class TurnExpectation:
         *,
         times: int | None = None,
     ) -> TurnExpectation:
-        """Asserts that the LLM was invoked (optionally an exact number of times)."""
+        """Asserts that the LLM was invoked (optionally an exact number of
+        times).
+        """
         invoked_count = sum(1 for s in self._turn.llm_steps if s.llm_invoked)
         if not self._turn.llm_steps and self._turn.llm_invoked:
             invoked_count = 1
@@ -1581,11 +1701,15 @@ class TurnExpectation:
             passed = invoked_count == times
         else:
             passed = invoked_count >= 1
+        times_clause = (
+            f" exactly {times} time(s)"
+            if times is not None
+            else " at least once"
+        )
         return self._check(
             passed,
             pos_msg=(
-                f"Expected turn to invoke LLM"
-                f"{f' exactly {times} time(s)' if times is not None else ' at least once'}, "
+                f"Expected turn to invoke LLM{times_clause}, "
                 f"but LLM was invoked {invoked_count} time(s)."
             ),
             neg_msg=(
@@ -1623,7 +1747,9 @@ class TurnExpectation:
         *,
         regex: bool = False,
     ) -> TurnExpectation:
-        """Asserts that the final turn response text matches `pattern_or_substring`."""
+        """Asserts that the final turn response text matches
+        `pattern_or_substring`.
+        """
         resp = self._turn.final_response
         texts: list[str] = []
         if resp is not None and resp.content is not None and resp.content.parts:
@@ -1644,7 +1770,8 @@ class TurnExpectation:
                 f"but got {full_reply!r}."
             ),
             neg_msg=(
-                f"Expected turn final reply NOT to match {pattern_or_substring!r}, "
+                "Expected turn final reply NOT to match "
+                f"{pattern_or_substring!r}, "
                 f"but got {full_reply!r}."
             ),
             expected=pattern_or_substring,
@@ -1678,28 +1805,25 @@ class TurnExpectation:
         if len(flat_names) == 1:
             target_agent = flat_names[0].strip()
             passed = (
-                (
-                    actual_transfer is not None
-                    and actual_transfer.strip() == target_agent
-                )
-                or target_agent in routed_targets
-            )
+                actual_transfer is not None
+                and actual_transfer.strip() == target_agent
+            ) or target_agent in routed_targets
         else:
             expected_norm = [a.strip() for a in flat_names]
             all_routed = [a.strip() for a in self._turn.routed_agents]
-            passed = (
-                routed_targets == expected_norm or all_routed == expected_norm
-            )
+            passed = expected_norm in (routed_targets, all_routed)
 
         return self._check(
             passed,
             pos_msg=(
                 f"Expected turn to transfer to {flat_names!r}, "
-                f"but transfer_to={actual_transfer!r} (routed_agents={self._turn.routed_agents!r})."
+                f"but transfer_to={actual_transfer!r} "
+                f"(routed_agents={self._turn.routed_agents!r})."
             ),
             neg_msg=(
                 f"Expected turn NOT to transfer to {flat_names!r}, "
-                f"but transfer_to={actual_transfer!r} (routed_agents={self._turn.routed_agents!r})."
+                f"but transfer_to={actual_transfer!r} "
+                f"(routed_agents={self._turn.routed_agents!r})."
             ),
             expected=flat_names[0] if len(flat_names) == 1 else flat_names,
             actual=actual_transfer
@@ -1715,18 +1839,25 @@ class TurnExpectation:
         by_callback: str | None = None,
         with_params: Mapping[str, Any] | None = None,
     ) -> TurnExpectation:
-        """Asserts that the turn triggered `end_session` (optionally by `by_callback` / `with_params`)."""
+        """Asserts that the turn triggered `end_session` (optionally by
+        `by_callback` / `with_params`).
+        """
         actual = self._turn.end_session
         passed = actual is not None
         if passed and with_params is not None:
             passed = not _subset_mismatches(with_params, actual or {})
         if passed and by_callback is not None:
             end_callbacks = [
-                st.short_circuited_by or st.failed_callback or st.culprit_callback
+                st.short_circuited_by
+                or st.failed_callback
+                or st.culprit_callback
                 for _, st in _iter_stage_traces_from_target(self._turn)
-                if st.short_circuited_by == by_callback
-                or st.failed_callback == by_callback
-                or st.culprit_callback == by_callback
+                if by_callback
+                in (
+                    st.short_circuited_by,
+                    st.failed_callback,
+                    st.culprit_callback,
+                )
                 or (
                     by_callback in st.executed_callbacks
                     and any(
@@ -1740,18 +1871,22 @@ class TurnExpectation:
                 len(end_callbacks) > 0
                 or self._turn.short_circuited_by == by_callback
             )
+        params_clause = (
+            f" with params {dict(with_params)!r}" if with_params else ""
+        )
         return self._check(
             passed,
             pos_msg=(
                 f"Expected turn to end session"
                 f"{f' by callback {by_callback!r}' if by_callback else ''}"
-                f"{f' with params {dict(with_params)!r}' if with_params else ''}, "
-                f"but end_session={actual!r}, short_circuited_by={self._turn.short_circuited_by!r}."
+                f"{params_clause}, "
+                f"but end_session={actual!r}, "
+                f"short_circuited_by={self._turn.short_circuited_by!r}."
             ),
             neg_msg=(
                 f"Expected turn NOT to end session"
                 f"{f' by callback {by_callback!r}' if by_callback else ''}"
-                f"{f' with params {dict(with_params)!r}' if with_params else ''}, "
+                f"{params_clause}, "
                 f"but end_session={actual!r}."
             ),
             expected={
@@ -1776,7 +1911,9 @@ class TurnExpectation:
         return "\n".join(chunks)
 
     def _full_serializable_prompt_surface(self, ls: LlmStepTrace) -> str:
-        """Extracts all text, function calls, function responses, inline data, and tool schemas sent to the LLM."""
+        """Extracts all text, function calls, function responses, inline data,
+        and tool schemas sent to the LLM.
+        """
         req = ls.request
         if req is None:
             return ""
@@ -1842,7 +1979,9 @@ class TurnExpectation:
         *,
         hop: int = 1,
     ) -> TurnExpectation:
-        """Asserts that `llm_request.config.system_instruction` at 1-based `hop` matches `substring_or_regex`."""
+        """Asserts that `llm_request.config.system_instruction` at 1-based `hop`
+        matches `substring_or_regex`.
+        """
         steps = self._resolve_llm_steps(hop)
         sys_text = "\n".join(
             _extract_system_instruction_text(s.request) for s in steps
@@ -1851,11 +1990,13 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected system_instruction (hop={hop}) to match {substring_or_regex!r}, "
+                f"Expected system_instruction (hop={hop}) to match "
+                f"{substring_or_regex!r}, "
                 f"but got {sys_text[:500]!r}."
             ),
             neg_msg=(
-                f"Expected system_instruction (hop={hop}) NOT to match {substring_or_regex!r}, "
+                f"Expected system_instruction (hop={hop}) NOT to match "
+                f"{substring_or_regex!r}, "
                 f"but it was present in {sys_text[:500]!r}."
             ),
             expected=substring_or_regex,
@@ -1868,18 +2009,22 @@ class TurnExpectation:
         *,
         hop: int = 1,
     ) -> TurnExpectation:
-        """Asserts that the hydrated prompt (`system_instruction` or `contents`) at 1-based `hop` matches `substring_or_regex`."""
+        """Asserts that the hydrated prompt (`system_instruction` or `contents`)
+        at 1-based `hop` matches `substring_or_regex`.
+        """
         steps = self._resolve_llm_steps(hop)
         prompt_text = "\n".join(self._prompt_text_for_step(s) for s in steps)
         passed = _match_text_or_regex(substring_or_regex, prompt_text)
         return self._check(
             passed,
             pos_msg=(
-                f"Expected LLM prompt (hop={hop}) to match {substring_or_regex!r}, "
+                f"Expected LLM prompt (hop={hop}) to match "
+                f"{substring_or_regex!r}, "
                 f"but it was not found in hydrated prompt."
             ),
             neg_msg=(
-                f"Expected LLM prompt (hop={hop}) NOT to match {substring_or_regex!r}, "
+                f"Expected LLM prompt (hop={hop}) NOT to match "
+                f"{substring_or_regex!r}, "
                 f"but it was present in hydrated prompt."
             ),
             expected=substring_or_regex,
@@ -1892,12 +2037,16 @@ class TurnExpectation:
         *forbidden_substrings: str,
         hop: int | None = None,
     ) -> TurnExpectation:
-        """Checks whether any of `forbidden_substrings` appear anywhere in the LLM request payload across hops and `agent_hops`.
+        """Checks whether any of `forbidden_substrings` appear anywhere in the
+        LLM request payload across hops and `agent_hops`.
 
-        Scans `system_instruction`, `contents` text, `<state_update>` / `<current_state>`,
-        `function_call` / `function_response` payloads, `inline_data`, and tool declarations.
+        Scans `system_instruction`, `contents` text, `<state_update>` /
+        `<current_state>`,
+        `function_call` / `function_response` payloads, `inline_data`, and tool
+        declarations.
         Typically chained with `.not_`:
-            `expect_turn(trace).not_.to_leak_in_prompt("SECRET_P1", "raw_token")`
+            `expect_turn(trace).not_.to_leak_in_prompt("SECRET_P1",
+            "raw_token")`
         """
         if not forbidden_substrings:
             raise ValueError(
@@ -1922,12 +2071,14 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected LLM prompt (hop={hop}) to contain leaked substring(s) from "
+                f"Expected LLM prompt (hop={hop}) to contain leaked "
+                "substring(s) from "
                 f"{list(forbidden_substrings)!r}, but none appeared in prompt."
             ),
             neg_msg=(
                 f"Expected LLM prompt (hop={hop}) NOT to leak any of "
-                f"{list(forbidden_substrings)!r}, but found leaked substring(s): {leaked!r}."
+                f"{list(forbidden_substrings)!r}, but found leaked "
+                f"substring(s): {leaked!r}."
             ),
             expected=list(forbidden_substrings),
             actual=leaked,
@@ -1939,7 +2090,8 @@ class TurnExpectation:
         *,
         hop: int | None = None,
     ) -> TurnExpectation:
-        """Checks whether any unresolved `{var}` or `{{var}}` placeholders remain in the prompt.
+        """Checks whether any unresolved `{var}` or `{{var}}` placeholders
+        remain in the prompt.
 
         Typically chained with `.not_`:
             `expect_turn(trace).not_.to_have_unresolved_placeholders()`
@@ -1956,11 +2108,13 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected LLM prompt (hop={hop}) to have unresolved placeholders, "
+                f"Expected LLM prompt (hop={hop}) to have unresolved "
+                "placeholders, "
                 "but all placeholders were resolved."
             ),
             neg_msg=(
-                f"Expected LLM prompt (hop={hop}) NOT to have unresolved placeholders, "
+                f"Expected LLM prompt (hop={hop}) NOT to have unresolved "
+                "placeholders, "
                 f"but found unresolved placeholder(s): {found!r}."
             ),
             expected="unresolved placeholders present",
@@ -1977,7 +2131,10 @@ class TurnExpectation:
         source: str = "state_update",
         **expected_kv: Any,
     ) -> TurnExpectation:
-        """Asserts that `<state_update>` (or `<current_state>` when `source="current_state"` / `"any"`) injected at 1-based `hop` includes `key` (and optional `expected_value` / `expected_kv`)."""
+        """Asserts that `<state_update>` (or `<current_state>` when
+        `source="current_state"` / `"any"`) injected at 1-based `hop` includes
+        `key` (and optional `expected_value` / `expected_kv`).
+        """
         keys_to_check: list[str] = [str(k) for k in (keys or ())]
         kv_to_check: dict[str, Any] = dict(expected_kv)
 
@@ -1989,7 +2146,8 @@ class TurnExpectation:
 
         if not keys_to_check and not kv_to_check:
             raise ValueError(
-                "to_inject_state_update() requires at least one key name or key=value pair."
+                "to_inject_state_update() requires at least one key name or "
+                "key=value pair."
             )
 
         steps = self._resolve_llm_steps(hop)
@@ -2003,8 +2161,7 @@ class TurnExpectation:
         kv_mismatches = _subset_mismatches(kv_to_check, merged_updates)
         if self._negated:
             passed = any(k in merged_updates for k in keys_to_check) or any(
-                k in merged_updates
-                and not _values_differ(merged_updates[k], v)
+                k in merged_updates and not _values_differ(merged_updates[k], v)
                 for k, v in kv_to_check.items()
             )
         else:
@@ -2014,13 +2171,18 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected LLM hop {hop} <{source}> to inject keys={keys_to_check!r} "
-                f"and values={kv_to_check!r}, but injected <{source}> was {merged_updates!r} "
-                f"(missing_keys={missing_keys!r}, mismatches={kv_mismatches!r})."
+                f"Expected LLM hop {hop} <{source}> to inject "
+                f"keys={keys_to_check!r} "
+                f"and values={kv_to_check!r}, but injected <{source}> was "
+                f"{merged_updates!r} "
+                f"(missing_keys={missing_keys!r}, "
+                f"mismatches={kv_mismatches!r})."
             ),
             neg_msg=(
-                f"Expected LLM hop {hop} <{source}> NOT to inject keys={keys_to_check!r} "
-                f"and values={kv_to_check!r}, but injected <{source}> was {merged_updates!r}."
+                f"Expected LLM hop {hop} <{source}> NOT to inject "
+                f"keys={keys_to_check!r} "
+                f"and values={kv_to_check!r}, but injected <{source}> was "
+                f"{merged_updates!r}."
             ),
             expected={"keys": keys_to_check, "values": kv_to_check},
             actual=merged_updates,
@@ -2032,7 +2194,9 @@ class TurnExpectation:
         *tool_names: str | Sequence[str],
         hop: int = 1,
     ) -> TurnExpectation:
-        """Asserts that all `tool_names` are exposed in `llm_request.config.tools` at 1-based `hop`."""
+        """Asserts that all `tool_names` are exposed in
+        `llm_request.config.tools` at 1-based `hop`.
+        """
         flat_names: list[str] = []
         for item in tool_names:
             if isinstance(item, str):
@@ -2073,7 +2237,9 @@ class TurnExpectation:
         *tool_names: str | Sequence[str],
         hop: int = 1,
     ) -> TurnExpectation:
-        """Asserts that none of `tool_names` are exposed in `llm_request.config.tools` at 1-based `hop`."""
+        """Asserts that none of `tool_names` are exposed in
+        `llm_request.config.tools` at 1-based `hop`.
+        """
         flat_names: list[str] = []
         for item in tool_names:
             if isinstance(item, str):
@@ -2103,7 +2269,8 @@ class TurnExpectation:
                 f"but {still_exposed!r} remained in active tools {active!r}."
             ),
             neg_msg=(
-                f"Expected LLM hop {hop} NOT to exclude tool(s) {flat_names!r}, "
+                f"Expected LLM hop {hop} NOT to exclude tool(s) "
+                f"{flat_names!r}, "
                 f"but active tools were {active!r}."
             ),
             expected=f"excluded {flat_names!r}",
@@ -2125,10 +2292,14 @@ class TurnExpectation:
 
         Args:
             tool_name: Name of the tool expected to be invoked.
-            with_args: Exact argument dictionary match against `final_tool_input` or `initial_tool_input`.
-            partial_args: Subset argument dictionary match against `final_tool_input` or `initial_tool_input`.
-            with_source: Optional provenance source filter (`"user-mock"`, `"local-python"`, `"openapi-example"`, `"dev-http"`, `"kb-fake"`).
-            with_status: Optional HTTP/tool status code filter (e.g. `200`, `500`).
+            with_args: Exact argument dictionary match against
+            `final_tool_input` or `initial_tool_input`.
+            partial_args: Subset argument dictionary match against
+            `final_tool_input` or `initial_tool_input`.
+            with_source: Optional provenance source filter (`"user-mock"`,
+            `"local-python"`, `"openapi-example"`, `"dev-http"`, `"kb-fake"`).
+            with_status: Optional HTTP/tool status code filter (e.g. `200`,
+            `500`).
             times: Exact number of matching calls expected.
         """
         matching_steps = [
@@ -2151,8 +2322,8 @@ class TurnExpectation:
             matching_steps = [
                 ts
                 for ts in matching_steps
-                if ts.final_tool_input == expected_exact
-                or ts.initial_tool_input == expected_exact
+                if expected_exact
+                in (ts.final_tool_input, ts.initial_tool_input)
             ]
         if partial_args is not None:
             matching_steps = [
@@ -2191,13 +2362,13 @@ class TurnExpectation:
             call_args = _extract_cb_call_kwargs(c)
             if with_args is not None and call_args != dict(with_args):
                 return False
-            if partial_args is not None and _subset_mismatches(
-                partial_args, call_args
-            ):
-                return False
-            return True
+            return not (
+                partial_args is not None
+                and _subset_mismatches(partial_args, call_args)
+            )
 
-        # Check mock_tools calls made inside callbacks AND nested_tool_calls inside ToolStepTrace
+        # Check mock_tools calls made inside callbacks AND nested_tool_calls
+        # inside ToolStepTrace
         cb_tool_calls: list[dict[str, Any]] = []
         for _, st in _iter_stage_traces_from_target(self._turn):
             for c in st.tool_calls:
@@ -2223,22 +2394,39 @@ class TurnExpectation:
             for ts in self._turn.tool_steps
         ] + cb_tool_calls
 
+        exact_args_clause = (
+            f" with exact args {dict(with_args)!r}"
+            if with_args is not None
+            else ""
+        )
+        partial_args_clause = (
+            f" with partial args {dict(partial_args)!r}"
+            if partial_args is not None
+            else ""
+        )
+        source_clause = (
+            f" with source {with_source!r}" if with_source is not None else ""
+        )
+        status_clause = (
+            f" with status {with_status!r}" if with_status is not None else ""
+        )
         return self._check(
             passed,
             pos_msg=(
                 f"Expected turn to call tool {tool_name!r}"
-                f"{f' with exact args {dict(with_args)!r}' if with_args is not None else ''}"
-                f"{f' with partial args {dict(partial_args)!r}' if partial_args is not None else ''}"
-                f"{f' with source {with_source!r}' if with_source is not None else ''}"
-                f"{f' with status {with_status!r}' if with_status is not None else ''}"
+                f"{exact_args_clause}"
+                f"{partial_args_clause}"
+                f"{source_clause}"
+                f"{status_clause}"
                 f"{f' exactly {times} time(s)' if times is not None else ''}, "
                 f"but recorded tool calls were {recorded_summary!r}."
             ),
             neg_msg=(
                 f"Expected turn NOT to call tool {tool_name!r}"
-                f"{f' with exact args {dict(with_args)!r}' if with_args is not None else ''}"
-                f"{f' with partial args {dict(partial_args)!r}' if partial_args is not None else ''}, "
-                f"but it was called {total_matches} time(s): {recorded_summary!r}."
+                f"{exact_args_clause}"
+                f"{partial_args_clause}, "
+                f"but it was called {total_matches} time(s): "
+                f"{recorded_summary!r}."
             ),
             expected={
                 "tool": tool_name,
@@ -2259,7 +2447,9 @@ class TurnExpectation:
         *,
         by: str | None = None,
     ) -> TurnExpectation:
-        """Asserts that `tool_name` was short-circuited by `before_tool` without running the tool impl."""
+        """Asserts that `tool_name` was short-circuited by `before_tool` without
+        running the tool impl.
+        """
         matching = [
             ts
             for ts in self._turn.tool_steps
@@ -2284,12 +2474,14 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected tool {tool_name!r} to be short-circuited by before_tool"
+                f"Expected tool {tool_name!r} to be short-circuited by "
+                "before_tool"
                 f"{f' ({by!r})' if by else ''}, "
                 f"but tool steps were {actual_summary!r}."
             ),
             neg_msg=(
-                f"Expected tool {tool_name!r} NOT to be short-circuited by before_tool"
+                f"Expected tool {tool_name!r} NOT to be short-circuited by "
+                "before_tool"
                 f"{f' ({by!r})' if by else ''}, "
                 f"but it was: {actual_summary!r}."
             ),
@@ -2304,7 +2496,9 @@ class TurnExpectation:
         /,
         **expected_kv: Any,
     ) -> TurnExpectation:
-        """Asserts that `tool_name` produced a `final_tool_response` matching `expected_subset` / `expected_kv`."""
+        """Asserts that `tool_name` produced a `final_tool_response` matching
+        `expected_subset` / `expected_kv`.
+        """
         expected: dict[str, Any] = {}
         if expected_subset is not None:
             expected.update(dict(expected_subset))
@@ -2325,11 +2519,13 @@ class TurnExpectation:
         return self._check(
             passed,
             pos_msg=(
-                f"Expected tool {tool_name!r} final_tool_response to match {expected!r}, "
+                f"Expected tool {tool_name!r} final_tool_response to match "
+                f"{expected!r}, "
                 f"but recorded responses were {actual_resps!r}."
             ),
             neg_msg=(
-                f"Expected tool {tool_name!r} final_tool_response NOT to match {expected!r}, "
+                f"Expected tool {tool_name!r} final_tool_response NOT to "
+                f"match {expected!r}, "
                 f"but it matched in {actual_resps!r}."
             ),
             expected=expected,
@@ -2340,11 +2536,15 @@ class TurnExpectation:
         self,
         tool_name: str | None = None,
     ) -> TurnExpectation:
-        """Asserts that any `LlmResponse` containing a `FunctionCall` (for `tool_name`) has only a single non-thought part.
+        """Asserts that any `LlmResponse` containing a `FunctionCall` (for
+        `tool_name`) has only a single non-thought part.
 
-        In CES runtime, when an `after_model` callback or LLM emits a client function /
-        `transfer_to_agent` / `end_session` tool call alongside extra text parts in the
-        same response, the runtime or client handler can fail or drop parts unless stripped
+        In CES runtime, when an `after_model` callback or LLM emits a client
+        function /
+        `transfer_to_agent` / `end_session` tool call alongside extra text parts
+        in the
+        same response, the runtime or client handler can fail or drop parts
+        unless stripped
         to a single `FunctionCall` part.
         """
         candidate_responses: list[tuple[str, LlmResponse]] = []
@@ -2398,13 +2598,17 @@ class TurnExpectation:
             passed,
             pos_msg=(
                 f"Expected LlmResponse with tool call"
-                f"{f' {tool_name!r}' if tool_name else ''} to have a single non-thought part, "
-                f"but matched_any_fc={matched_any_fc}, violations={violations!r}."
+                f"{f' {tool_name!r}' if tool_name else ''} to have a single "
+                "non-thought part, "
+                f"but matched_any_fc={matched_any_fc}, "
+                f"violations={violations!r}."
             ),
             neg_msg=(
                 f"Expected LlmResponse with tool call"
-                f"{f' {tool_name!r}' if tool_name else ''} NOT to have a single non-thought part, "
-                "but all matching tool call responses had exactly 1 non-thought part."
+                f"{f' {tool_name!r}' if tool_name else ''} NOT to have a "
+                "single non-thought part, "
+                "but all matching tool call responses had exactly 1 "
+                "non-thought part."
             ),
             expected="1 non-thought part on tool call response",
             actual=violations
@@ -2426,7 +2630,9 @@ class TurnExpectation:
         /,
         **expected_kv: Any,
     ) -> TurnExpectation:
-        """Asserts that `turn.final_state` contains the expected key-value pairs."""
+        """Asserts that `turn.final_state` contains the expected key-value
+        pairs.
+        """
         expected: dict[str, Any] = {}
         if _expected_dict is not None:
             expected.update(dict(_expected_dict))
@@ -2462,28 +2668,28 @@ class TurnExpectation:
         key: str,
         expected_value: Any = _UNSET,
     ) -> TurnExpectation:
-        """Asserts that `key` is present in `turn.final_state` (optionally with `expected_value`)."""
+        """Asserts that `key` is present in `turn.final_state` (optionally with
+        `expected_value`).
+        """
         if expected_value is _UNSET:
             passed = key in self._turn.final_state
             exp_repr: Any = f"key {key!r} present"
         else:
-            passed = (
-                key in self._turn.final_state
-                and not _values_differ(
-                    self._turn.final_state[key], expected_value
-                )
+            passed = key in self._turn.final_state and not _values_differ(
+                self._turn.final_state[key], expected_value
             )
             exp_repr = {key: expected_value}
+        val_clause = (
+            f" == {expected_value!r}" if expected_value is not _UNSET else ""
+        )
         return self._check(
             passed,
             pos_msg=(
-                f"Expected turn final_state to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected turn final_state to have {key!r}{val_clause}, "
                 f"but got {self._turn.final_state.get(key, '<MISSING>')!r}."
             ),
             neg_msg=(
-                f"Expected turn final_state NOT to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected turn final_state NOT to have {key!r}{val_clause}, "
                 f"but it was {self._turn.final_state.get(key, '<MISSING>')!r}."
             ),
             expected=exp_repr,
@@ -2497,11 +2703,17 @@ class TurnExpectation:
         expected_value: Any = _UNSET,
         **expected_kv: Any,
     ) -> TurnExpectation:
-        """Asserts that `turn.final_state` matches `(key, expected_value)`, a mapping, or `**expected_kv`."""
+        """Asserts that `turn.final_state` matches `(key, expected_value)`, a
+        mapping, or `**expected_kv`.
+        """
         if isinstance(key_or_dict, str):
             if expected_value is _UNSET and not expected_kv:
                 return self.to_have_state_key(key_or_dict)
-            merged = {key_or_dict: expected_value} if expected_value is not _UNSET else {}
+            merged = (
+                {key_or_dict: expected_value}
+                if expected_value is not _UNSET
+                else {}
+            )
             merged.update(expected_kv)
             return self.to_set_state(merged)
         return self.to_set_state(key_or_dict, **expected_kv)
@@ -2515,16 +2727,18 @@ class TurnExpectation:
         snapshot_dir: str | Path | None = None,
         update_snapshots: bool | None = None,
     ) -> TurnExpectation:
-        """Asserts that the deterministic turn snapshot matches the stored `.snap.json` entry."""
-        eff_dir = snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        """Asserts that the deterministic turn snapshot matches the stored
+        `.snap.json` entry.
+        """
+        eff_dir = (
+            snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        )
         eff_upd = (
             update_snapshots
             if update_snapshots is not None
             else self._update_snapshots
         )
-        mgr = SnapshotManager(
-            snapshot_dir=eff_dir, update_snapshots=eff_upd
-        )
+        mgr = SnapshotManager(snapshot_dir=eff_dir, update_snapshots=eff_upd)
         if not self._negated:
             mgr.match_turn(
                 self._turn,
@@ -2534,14 +2748,8 @@ class TurnExpectation:
                 update_snapshots=eff_upd,
             )
             return (
-                self._positive_self
-                if self._positive_self is not None
-                else self
+                self._positive_self if self._positive_self is not None else self
             )
-
-        from cxas_scrapi.evals.callback_chain.snapshots import (
-            serialize_turn_snapshot,
-        )
 
         payload = serialize_turn_snapshot(
             self._turn,
@@ -2553,25 +2761,30 @@ class TurnExpectation:
         )
         if not exists_on_disk:
             raise AgentAssertionError(
-                f"Cannot assert `.not_.to_match_snapshot({name!r})` when no stored snapshot exists on disk.",
+                (
+                    f"Cannot assert `.not_.to_match_snapshot({name!r})` when "
+                    "no "
+                    "stored snapshot exists on disk."
+                ),
                 trace=self._turn,
                 runner=self._runner,
             )
         if matches_expected:
             raise AgentAssertionError(
-                f"Expected turn NOT to match snapshot {name!r}, but it matched identically.",
+                (
+                    f"Expected turn NOT to match snapshot {name!r}, but it "
+                    "matched identically."
+                ),
                 trace=self._turn,
                 runner=self._runner,
             )
-        return (
-            self._positive_self
-            if self._positive_self is not None
-            else self
-        )
+        return self._positive_self if self._positive_self is not None else self
 
 
 class SessionExpectation:
-    """Fluent Jest-style assertion wrapper for a multi-turn `SessionSimulator`."""
+    """Fluent Jest-style assertion wrapper for a multi-turn
+    `SessionSimulator`.
+    """
 
     def __init__(
         self,
@@ -2621,7 +2834,8 @@ class SessionExpectation:
             )
         else:
             raise TypeError(
-                f"expect_session() requires a SessionSimulator or Sequence[TurnTrace]; "
+                "expect_session() requires a SessionSimulator or "
+                "Sequence[TurnTrace]; "
                 f"got {type(session).__name__}."
             )
         self._snapshot_dir = snapshot_dir
@@ -2646,7 +2860,9 @@ class SessionExpectation:
         )
 
     def turn(self, index: int = 1) -> TurnExpectation:
-        """Returns a `TurnExpectation` for the 1-based turn `index` (or `-1` for the last turn)."""
+        """Returns a `TurnExpectation` for the 1-based turn `index` (or `-1` for
+        the last turn).
+        """
         if (
             not isinstance(index, int)
             or isinstance(index, bool)
@@ -2654,7 +2870,8 @@ class SessionExpectation:
             or index < -1
         ):
             raise ValueError(
-                f"Session turn index must be 1-based (index >= 1) or -1 for the last turn, got {index!r}."
+                "Session turn index must be 1-based (index >= 1) or -1 for "
+                f"the last turn, got {index!r}."
             )
         if not self._turns:
             raise AgentAssertionError(
@@ -2666,7 +2883,11 @@ class SessionExpectation:
             target_turn = self._turns[-1]
         elif index > len(self._turns):
             raise AgentAssertionError(
-                f"Requested 1-based turn {index}, but session only recorded {len(self._turns)} turn(s).",
+                (
+                    f"Requested 1-based turn {index}, but session only "
+                    "recorded "
+                    f"{len(self._turns)} turn(s)."
+                ),
                 trace=self._session,
                 expected=f"index <= {len(self._turns)}",
                 actual=len(self._turns),
@@ -2772,8 +2993,14 @@ class SessionExpectation:
         passed = actual == expected_count
         return self._check(
             passed,
-            pos_msg=f"Expected session to have {expected_count} turn(s), but got {actual}.",
-            neg_msg=f"Expected session NOT to have {expected_count} turn(s), but got {actual}.",
+            pos_msg=(
+                f"Expected session to have {expected_count} turn(s), but got "
+                f"{actual}."
+            ),
+            neg_msg=(
+                f"Expected session NOT to have {expected_count} turn(s), but "
+                f"got {actual}."
+            ),
             expected=expected_count,
             actual=actual,
         )
@@ -2816,7 +3043,9 @@ class SessionExpectation:
     to_follow_agent_path = to_have_routed_agents
 
     def to_end_on_agent(self, agent_name: str) -> SessionExpectation:
-        """Asserts that the currently active agent at the end of the session is `agent_name`."""
+        """Asserts that the currently active agent at the end of the session is
+        `agent_name`.
+        """
         actual = (
             self._session.current_agent
             if self._session is not None
@@ -2845,7 +3074,9 @@ class SessionExpectation:
         /,
         **expected_kv: Any,
     ) -> SessionExpectation:
-        """Asserts that the final session state contains the expected key-value pairs."""
+        """Asserts that the final session state contains the expected key-value
+        pairs.
+        """
         expected: dict[str, Any] = {}
         if _expected_dict is not None:
             expected.update(dict(_expected_dict))
@@ -2858,9 +3089,7 @@ class SessionExpectation:
 
         mismatches = _subset_mismatches(expected, self._state)
         passed = len(mismatches) == 0
-        actual_subset = {
-            k: self._state.get(k, "<MISSING>") for k in expected
-        }
+        actual_subset = {k: self._state.get(k, "<MISSING>") for k in expected}
         return self._check(
             passed,
             pos_msg=(
@@ -2883,26 +3112,28 @@ class SessionExpectation:
         key: str,
         expected_value: Any = _UNSET,
     ) -> SessionExpectation:
-        """Asserts that `key` is present in the final session state (optionally with `expected_value`)."""
+        """Asserts that `key` is present in the final session state (optionally
+        with `expected_value`).
+        """
         if expected_value is _UNSET:
             passed = key in self._state
             exp_repr: Any = f"key {key!r} present"
         else:
-            passed = (
-                key in self._state
-                and not _values_differ(self._state[key], expected_value)
+            passed = key in self._state and not _values_differ(
+                self._state[key], expected_value
             )
             exp_repr = {key: expected_value}
+        val_clause = (
+            f" == {expected_value!r}" if expected_value is not _UNSET else ""
+        )
         return self._check(
             passed,
             pos_msg=(
-                f"Expected session state to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected session state to have {key!r}{val_clause}, "
                 f"but got {self._state.get(key, '<MISSING>')!r}."
             ),
             neg_msg=(
-                f"Expected session state NOT to have {key!r}"
-                f"{f' == {expected_value!r}' if expected_value is not _UNSET else ''}, "
+                f"Expected session state NOT to have {key!r}{val_clause}, "
                 f"but it was {self._state.get(key, '<MISSING>')!r}."
             ),
             expected=exp_repr,
@@ -2916,11 +3147,17 @@ class SessionExpectation:
         expected_value: Any = _UNSET,
         **expected_kv: Any,
     ) -> SessionExpectation:
-        """Asserts that the final session state matches `(key, expected_value)`, a mapping, or `**expected_kv`."""
+        """Asserts that the final session state matches `(key, expected_value)`,
+        a mapping, or `**expected_kv`.
+        """
         if isinstance(key_or_dict, str):
             if expected_value is _UNSET and not expected_kv:
                 return self.to_have_state_key(key_or_dict)
-            merged = {key_or_dict: expected_value} if expected_value is not _UNSET else {}
+            merged = (
+                {key_or_dict: expected_value}
+                if expected_value is not _UNSET
+                else {}
+            )
             merged.update(expected_kv)
             return self.to_set_state(merged)
         return self.to_set_state(key_or_dict, **expected_kv)
@@ -2933,7 +3170,9 @@ class SessionExpectation:
         max_llm_calls: int | None = None,
         max_tool_calls: int | None = None,
     ) -> SessionExpectation:
-        """Asserts that cumulative session resource consumption stays within specified limits."""
+        """Asserts that cumulative session resource consumption stays within
+        specified limits.
+        """
         if (
             max_total_tokens is None
             and max_duration_ms is None
@@ -2942,7 +3181,8 @@ class SessionExpectation:
         ):
             raise ValueError(
                 "to_stay_within_budget() requires at least one budget limit "
-                "(max_total_tokens, max_duration_ms, max_llm_calls, or max_tool_calls)."
+                "(max_total_tokens, max_duration_ms, max_llm_calls, or "
+                "max_tool_calls)."
             )
         total_tokens = sum(t.total_tokens for t in self._turns)
         total_duration_ms = sum(t.duration_ms for t in self._turns)
@@ -2956,19 +3196,23 @@ class SessionExpectation:
         violations: list[str] = []
         if max_total_tokens is not None and total_tokens > max_total_tokens:
             violations.append(
-                f"total_tokens={total_tokens} > max_total_tokens={max_total_tokens}"
+                f"total_tokens={total_tokens} > "
+                f"max_total_tokens={max_total_tokens}"
             )
         if max_duration_ms is not None and total_duration_ms > max_duration_ms:
             violations.append(
-                f"total_duration_ms={total_duration_ms:.2f} > max_duration_ms={max_duration_ms:.2f}"
+                f"total_duration_ms={total_duration_ms:.2f} > "
+                f"max_duration_ms={max_duration_ms:.2f}"
             )
         if max_llm_calls is not None and total_llm_calls > max_llm_calls:
             violations.append(
-                f"total_llm_calls={total_llm_calls} > max_llm_calls={max_llm_calls}"
+                f"total_llm_calls={total_llm_calls} > "
+                f"max_llm_calls={max_llm_calls}"
             )
         if max_tool_calls is not None and total_tool_calls > max_tool_calls:
             violations.append(
-                f"total_tool_calls={total_tool_calls} > max_tool_calls={max_tool_calls}"
+                f"total_tool_calls={total_tool_calls} > "
+                f"max_tool_calls={max_tool_calls}"
             )
 
         passed = len(violations) == 0
@@ -3011,16 +3255,18 @@ class SessionExpectation:
         snapshot_dir: str | Path | None = None,
         update_snapshots: bool | None = None,
     ) -> SessionExpectation:
-        """Asserts that the deterministic session snapshot matches the stored `.snap.json` entry."""
-        eff_dir = snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        """Asserts that the deterministic session snapshot matches the stored
+        `.snap.json` entry.
+        """
+        eff_dir = (
+            snapshot_dir if snapshot_dir is not None else self._snapshot_dir
+        )
         eff_upd = (
             update_snapshots
             if update_snapshots is not None
             else self._update_snapshots
         )
-        mgr = SnapshotManager(
-            snapshot_dir=eff_dir, update_snapshots=eff_upd
-        )
+        mgr = SnapshotManager(snapshot_dir=eff_dir, update_snapshots=eff_upd)
         target_obj: SessionSimulator | Sequence[TurnTrace] = (
             self._session if self._session is not None else self._turns
         )
@@ -3033,14 +3279,8 @@ class SessionExpectation:
                 update_snapshots=eff_upd,
             )
             return (
-                self._positive_self
-                if self._positive_self is not None
-                else self
+                self._positive_self if self._positive_self is not None else self
             )
-
-        from cxas_scrapi.evals.callback_chain.snapshots import (
-            serialize_session_snapshot,
-        )
 
         payload = serialize_session_snapshot(
             target_obj,
@@ -3052,7 +3292,11 @@ class SessionExpectation:
         )
         if not exists_on_disk:
             raise AgentAssertionError(
-                f"Cannot assert `.not_.to_match_snapshot({name!r})` when no stored snapshot exists on disk.",
+                (
+                    f"Cannot assert `.not_.to_match_snapshot({name!r})` when "
+                    "no "
+                    "stored snapshot exists on disk."
+                ),
                 trace=self._session
                 if self._session is not None
                 else (self._turns[-1] if self._turns else None),
@@ -3060,17 +3304,16 @@ class SessionExpectation:
             )
         if matches_expected:
             raise AgentAssertionError(
-                f"Expected session NOT to match snapshot {name!r}, but it matched identically.",
+                (
+                    f"Expected session NOT to match snapshot {name!r}, but it "
+                    "matched identically."
+                ),
                 trace=self._session
                 if self._session is not None
                 else (self._turns[-1] if self._turns else None),
                 runner=self._runner,
             )
-        return (
-            self._positive_self
-            if self._positive_self is not None
-            else self
-        )
+        return self._positive_self if self._positive_self is not None else self
 
 
 def expect_stage(
@@ -3080,7 +3323,9 @@ def expect_stage(
     snapshot_dir: str | Path | None = None,
     update_snapshots: bool | None = None,
 ) -> StageExpectation:
-    """Entry point for Jest-style fluent assertions on a stage trace or ModeDiffReport."""
+    """Entry point for Jest-style fluent assertions on a stage trace or
+    ModeDiffReport.
+    """
     return StageExpectation(
         trace_or_tuple,
         runner=runner,
@@ -3096,7 +3341,9 @@ def expect_turn(
     snapshot_dir: str | Path | None = None,
     update_snapshots: bool | None = None,
 ) -> TurnExpectation:
-    """Entry point for Jest-style fluent assertions on a single-turn `TurnTrace`."""
+    """Entry point for Jest-style fluent assertions on a single-turn
+    `TurnTrace`.
+    """
     return TurnExpectation(
         turn_or_tuple,
         runner=runner,
@@ -3112,7 +3359,9 @@ def expect_session(
     snapshot_dir: str | Path | None = None,
     update_snapshots: bool | None = None,
 ) -> SessionExpectation:
-    """Entry point for Jest-style fluent assertions on a multi-turn `SessionSimulator`."""
+    """Entry point for Jest-style fluent assertions on a multi-turn
+    `SessionSimulator`.
+    """
     return SessionExpectation(
         session,
         runner=runner,
@@ -3145,7 +3394,8 @@ class ToolSpyExpectation:
             matching = [
                 c
                 for c in matching
-                if isinstance(c, Mapping) and not _subset_mismatches(with_args, c)
+                if isinstance(c, Mapping)
+                and not _subset_mismatches(with_args, c)
             ]
         if partial_args is not None:
             matching = [
@@ -3162,8 +3412,10 @@ class ToolSpyExpectation:
             passed = not passed
         if not passed:
             raise AgentAssertionError(
-                f"Expected ToolSpy '{getattr(self._spy, 'name', 'spy')}' call assertion to pass "
-                f"(times={times}, with_args={with_args}, partial_args={partial_args}), "
+                f"Expected ToolSpy '{getattr(self._spy, 'name', 'spy')}' call "
+                "assertion to pass "
+                f"(times={times}, with_args={with_args}, "
+                f"partial_args={partial_args}), "
                 f"but recorded calls were {calls!r}."
             )
         return self
@@ -3196,9 +3448,17 @@ def expect(
     runner: CallbackChainRunner | None = None,
     snapshot_dir: str | Path | None = None,
     update_snapshots: bool | None = None,
-) -> StageExpectation | TurnExpectation | SessionExpectation | ToolSpyExpectation:
-    """Unified Jest-style `expect(target)` entry point dispatching to stage, turn, session, or ToolSpy matchers."""
-    if hasattr(target, "assert_called") and hasattr(target, "calls") and not isinstance(target, (CallbackTrace, TurnTrace)):
+) -> (
+    StageExpectation | TurnExpectation | SessionExpectation | ToolSpyExpectation
+):
+    """Unified Jest-style `expect(target)` entry point dispatching to stage,
+    turn, session, or ToolSpy matchers.
+    """
+    if (
+        hasattr(target, "assert_called")
+        and hasattr(target, "calls")
+        and not isinstance(target, (CallbackTrace, TurnTrace))
+    ):
         return ToolSpyExpectation(target)
     if isinstance(target, (CallbackTrace, ModeDiffReport)) or (
         isinstance(target, tuple)

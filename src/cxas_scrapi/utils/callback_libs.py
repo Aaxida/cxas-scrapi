@@ -23,7 +23,16 @@ import json as json_lib
 import math
 import types
 import uuid
-from typing import Any, Callable, Dict, List, Optional, Set, Tuple, Union
+from typing import (  # noqa: F401, UP035
+    Any,
+    Callable,
+    Dict,
+    List,
+    Optional,
+    Set,
+    Tuple,
+    Union,
+)
 
 import pydantic
 
@@ -50,7 +59,8 @@ class _OrjsonShim(types.ModuleType):
     - Raises `TypeError("Dict key must be str")` on non-string dict keys unless
       `OPT_NON_STR_KEYS` is set.
     - Serializes `NaN`, `Infinity`, and `-Infinity` as `null`.
-    - Requires `default` callback for custom types (`bytes`, `set`, `BaseModel`).
+    - Requires `default` callback for custom types
+      (`bytes`, `set`, `BaseModel`).
     """
 
     OPT_NON_STR_KEYS = 1
@@ -97,15 +107,12 @@ class _OrjsonShim(types.ModuleType):
             return out
         if isinstance(val, (list, tuple)):
             return [
-                self._prepare(item, default, allow_non_str_keys)
-                for item in val
+                self._prepare(item, default, allow_non_str_keys) for item in val
             ]
         if default is not None:
             converted = default(val)
             return self._prepare(converted, default, allow_non_str_keys)
-        raise TypeError(
-            f"Type is not JSON serializable: {type(val).__name__}"
-        )
+        raise TypeError(f"Type is not JSON serializable: {type(val).__name__}")
 
     def dumps(
         self,
@@ -209,7 +216,7 @@ class ExternalResponse:
 
 
 class MockExternalResponse(dict, ExternalResponse):
-    """Dict-compatible ExternalResponse returned by mock_tools for dict payloads."""
+    """Dict-compatible ExternalResponse returned by mock_tools for dicts."""
 
     def __init__(
         self,
@@ -258,7 +265,7 @@ class MockExternalResponse(dict, ExternalResponse):
 
 
 def _wrap_mock_tool_output(raw: Any) -> Any:
-    """Wraps mock tool output so both dict access and .json() work seamlessly."""
+    """Wraps mock tool output so dict access and .json() work seamlessly."""
     if isinstance(raw, ExternalResponse):
         return raw
     if isinstance(raw, dict):
@@ -606,9 +613,7 @@ class UsageMetadata(BaseModel):
     candidates_token_count: int = pydantic.Field(
         default=0, alias="candidatesTokenCount"
     )
-    total_token_count: int = pydantic.Field(
-        default=0, alias="totalTokenCount"
-    )
+    total_token_count: int = pydantic.Field(default=0, alias="totalTokenCount")
     cached_content_token_count: int = pydantic.Field(
         default=0, alias="cachedContentTokenCount"
     )
@@ -723,7 +728,9 @@ class _CallablePartList(list):
 class Event(BaseModel):
     """Representation of an event in the session in the tool context."""
 
-    id: str = pydantic.Field(default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}")
+    id: str = pydantic.Field(
+        default_factory=lambda: f"evt_{uuid.uuid4().hex[:12]}"
+    )
     author: str = "user"
     timestamp: int = pydantic.Field(
         default_factory=lambda: int(
@@ -897,7 +904,7 @@ class Tool(BaseModel):
     )
 
 
-class LlmRequest(BaseModel):
+class LlmRequest(BaseModel):  # noqa: PLW1641
     """Datamodel for the LLM request."""
 
     model: str | None = None
@@ -937,9 +944,7 @@ class LlmResponse(BaseModel):
     finish_reason: str | None = pydantic.Field(
         default=None, alias="finishReason"
     )
-    block_reason: str | None = pydantic.Field(
-        default=None, alias="blockReason"
-    )
+    block_reason: str | None = pydantic.Field(default=None, alias="blockReason")
 
     @classmethod
     def from_parts(

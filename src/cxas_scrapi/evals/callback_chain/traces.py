@@ -16,13 +16,14 @@
 
 from __future__ import annotations
 
+import copy
 import dataclasses
 import math
-import os
-from collections.abc import Mapping, Sequence
-from typing import Any, Literal
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Any, Literal
 
-from cxas_scrapi.utils.callback_libs import LlmRequest, LlmResponse
+if TYPE_CHECKING:
+    from cxas_scrapi.utils.callback_libs import LlmRequest, LlmResponse
 
 StageType = Literal[
     "before_agent",
@@ -93,7 +94,9 @@ class CallbackStepTrace:
 
     @property
     def status(self) -> Literal["EXECUTED", "SHORT_CIRCUITED", "FAILED"]:
-        """Execution status of this callback step (`"EXECUTED"`, `"SHORT_CIRCUITED"`, or `"FAILED"`)."""
+        """Execution status of this callback step (`"EXECUTED"`,
+        `"SHORT_CIRCUITED"`, or `"FAILED"`).
+        """
         if self.error is not None:
             return "FAILED"
         if self.returned_override:
@@ -111,43 +114,57 @@ class CallbackTrace:
         image_version: Sandbox image version (`"v1"` or `"v2"`).
         executed_callbacks: Ordered names of callbacks that started execution.
         disabled_callbacks: Names of callbacks skipped due to `disabled: true`.
-        skipped_callbacks: Names of enabled callbacks skipped due to short-circuit
+        skipped_callbacks: Names of enabled callbacks skipped due to
+        short-circuit
             or an earlier callback exception.
-        short_circuited: True if an enabled callback returned a non-None override
+        short_circuited: True if an enabled callback returned a non-None
+        override
             (or broke the combined loop).
-        short_circuited_by: Name of the callback that triggered short-circuiting.
-        failed_callback: Name of the callback that raised an exception or returned
+        short_circuited_by: Name of the callback that triggered
+        short-circuiting.
+        failed_callback: Name of the callback that raised an exception or
+        returned
             an invalid result during `callback_execution` or `post_validation`.
             Set to `None` when `error_phase == "end_of_chain_serialization"`.
-        culprit_callback: Name of the callback that caused the failure (including
-            the callback that first introduced an unserializable state value when
+        culprit_callback: Name of the callback that caused the failure
+        (including
+            the callback that first introduced an unserializable state value
+            when
             `error_phase == "end_of_chain_serialization"`).
         error_phase: Phase in which an error occurred (`"callback_execution"`,
             `"end_of_chain_serialization"`, or `"post_validation"`).
         error: Formatted exception message and traceback if a failure occurred.
-            Note: Because CES `enable_exception_handling=True` converts unhandled
+            Note: Because CES `enable_exception_handling=True` converts
+            unhandled
             callback exceptions into fallback responses by default, tests should
             assert `trace.error is None` or call `trace.raise_for_error()`.
         error_outcome: Resolved CES error handling outcome (`"fallback"`,
             `"end_session"`, or `"error"`), or `None` if no error occurred.
-        consecutive_fallback_count_after: Updated consecutive fallback count after
+        consecutive_fallback_count_after: Updated consecutive fallback count
+        after
             this stage execution (0 on success, incremented on `"fallback"`).
         stdout: Concatenated stdout across all executed steps in the stage.
         stderr: Concatenated stderr across all executed steps in the stage.
         initial_state: Deep copy of session state at the start of the stage.
-        final_state: Deep copy of committed session state at the end of the stage.
+        final_state: Deep copy of committed session state at the end of the
+        stage.
         final_request: Final `LlmRequest` (only populated for `before_model`).
-        override_response: Explicit override returned by a callback (or fallback /
-            end_session response on error), or `None` if all callbacks returned `None`.
+        override_response: Explicit override returned by a callback (or fallback
+        /
+            end_session response on error), or `None` if all callbacks returned
+            `None`.
         effective_response: Effective response after the stage completes. For
-            `after_model`, if `override_response` is `None`, this is the original
+            `after_model`, if `override_response` is `None`, this is the
+            original
             `llm_response`; for all other stages, equals `override_response`.
         final_response: Alias for `effective_response` (for `after_model`, the
             effective `LlmResponse`; for other stages, the override response).
         final_tool_input: Final `tool_input` dict (populated for `before_tool`).
-        tool_calls: Recorded mock tool invocations `[{"tool": ..., "args": ...}]`.
+        tool_calls: Recorded mock tool invocations `[{"tool": ..., "args":
+        ...}]`.
         steps: Per-callback step traces.
-        warnings: Runtime diagnostic warnings (e.g., mutable state aliasing hazards).
+        warnings: Runtime diagnostic warnings (e.g., mutable state aliasing
+        hazards).
     """
 
     stage: StageType
@@ -184,7 +201,9 @@ class CallbackTrace:
     )
 
     def raise_for_error(self) -> None:
-        """Re-raises the underlying exception if this stage encountered an error."""
+        """Re-raises the underlying exception if this stage encountered an
+        error.
+        """
         if self.raw_exception is not None:
             raise self.raw_exception
         if self.error is not None:
@@ -193,7 +212,9 @@ class CallbackTrace:
 
 @dataclasses.dataclass
 class ToolStepTrace:
-    """Execution trace for a single tool call in `run_turn(execute_tools=True)`."""
+    """Execution trace for a single tool call in
+    `run_turn(execute_tools=True)`.
+    """
 
     tool_name: str
     function_call_id: str | None
@@ -223,7 +244,9 @@ class ToolStepTrace:
             "function_call_id": self.function_call_id,
             "initial_tool_input": copy.deepcopy(self.initial_tool_input),
             "final_tool_input": copy.deepcopy(self.final_tool_input),
-            "short_circuited_by_before_tool": self.short_circuited_by_before_tool,
+            "short_circuited_by_before_tool": (
+                self.short_circuited_by_before_tool
+            ),
             "tool_executed": self.tool_executed,
             "missing_impl": self.missing_impl,
             "raw_tool_response": copy.deepcopy(self.raw_tool_response),
@@ -266,7 +289,9 @@ class ToolStepTrace:
 
 @dataclasses.dataclass
 class LlmStepTrace:
-    """Execution trace for a single LLM call cycle (`before_model -> MockLLM -> after_model`)."""
+    """Execution trace for a single LLM call cycle (`before_model -> MockLLM ->
+    after_model`).
+    """
 
     step_index: int
     request: LlmRequest
@@ -316,14 +341,17 @@ class LlmStepTrace:
         return self.raw_response
 
     def raise_for_error(self) -> None:
-        """Re-raises any exception from `before_model_trace` or `after_model_trace`."""
+        """Re-raises any exception from `before_model_trace` or
+        `after_model_trace`.
+        """
         self.before_model_trace.raise_for_error()
         if self.after_model_trace is not None:
             self.after_model_trace.raise_for_error()
 
 
 class _AgentHopList(list["TurnTrace"]):
-    """List of multi-agent transfer hop traces with single-hop fallback indexing.
+    """List of multi-agent transfer hop traces with single-hop fallback
+    indexing.
 
     When no multi-agent transfers occurred (`len(agent_hops) == 0`), indexing
     `agent_hops[0]` or `agent_hops[-1]` returns the owning `TurnTrace` for
@@ -499,7 +527,9 @@ class TurnTrace:
         return None
 
     def raise_for_error(self) -> None:
-        """Re-raises the first underlying exception encountered during the turn."""
+        """Re-raises the first underlying exception encountered during the
+        turn.
+        """
         if self.before_agent_trace is not None:
             self.before_agent_trace.raise_for_error()
         for ls in self.llm_steps:
@@ -526,7 +556,9 @@ class TurnTrace:
 
 @dataclasses.dataclass
 class ModeDiffReport:
-    """Comparison report between `per_callback` and `combined` execution modes."""
+    """Comparison report between `per_callback` and `combined` execution
+    modes.
+    """
 
     stage: StageType
     per_callback_trace: CallbackTrace
@@ -561,7 +593,9 @@ class ModeDiffReport:
         return self.has_diff
 
     def explain(self) -> list[str]:
-        """Generates human-readable root-cause explanations for detected mode differences."""
+        """Generates human-readable root-cause explanations for detected mode
+        differences.
+        """
         explanations: list[str] = []
         if not self.has_diff:
             return explanations
@@ -570,12 +604,16 @@ class ModeDiffReport:
         if self.combined_trace.warnings:
             for w in self.combined_trace.warnings:
                 explanations.append(
-                    f"[Aliasing / Shared Reference (C012)] {w} In 'combined' mode, "
-                    "in-place mutations by a subsequent callback affect all aliased keys, "
-                    "whereas 'per_callback' mode isolates keys via JSON round-trip after each step."
+                    f"[Aliasing / Shared Reference (C012)] {w} In 'combined' "
+                    "mode, "
+                    "in-place mutations by a subsequent callback affect all "
+                    "aliased keys, "
+                    "whereas 'per_callback' mode isolates keys via JSON "
+                    "round-trip after each step."
                 )
 
-        # 2. Check execution order differences (e.g. tool callback returning {} or mid-chain error)
+        # 2. Check execution order differences (e.g. tool callback returning {}
+        # or mid-chain error)
         if self.has_execution_order_diff:
             if (
                 self.stage in ("before_tool", "after_tool")
@@ -586,10 +624,14 @@ class ModeDiffReport:
                 sc_by = self.combined_trace.short_circuited_by
                 explanations.append(
                     f"[Tool Empty/Non-Struct Return (C015)] Callback '{sc_by}' "
-                    "returned an empty dict `{}` (or non-struct in v2). In 'combined' mode, "
-                    "the Python loop checks `if tool_response is not None: break` and skips "
-                    "remaining callbacks, whereas in 'per_callback' mode the runtime treats "
-                    "an empty dict `{}` as no override (`None`) and continues executing "
+                    "returned an empty dict `{}` (or non-struct in v2). In "
+                    "'combined' mode, "
+                    "the Python loop checks `if tool_response is not None: "
+                    "break` and skips "
+                    "remaining callbacks, whereas in 'per_callback' mode the "
+                    "runtime treats "
+                    "an empty dict `{}` as no override (`None`) and continues "
+                    "executing "
                     "subsequent callbacks."
                 )
             elif self.has_error_diff:
@@ -597,24 +639,32 @@ class ModeDiffReport:
                 comb_phase = self.combined_trace.error_phase
                 comb_culprit = self.combined_trace.culprit_callback
                 explanations.append(
-                    "[Error Timing Difference] In 'per_callback' mode, state/return "
-                    f"serialization runs after each callback (failing at '{per_failed}' and "
-                    "preserving prior callbacks' committed state), whereas in 'combined' mode "
-                    f"serialization runs once at the end of the chain (phase='{comb_phase}', "
+                    "[Error Timing Difference] In 'per_callback' mode, "
+                    "state/return "
+                    "serialization runs after each callback (failing at "
+                    f"'{per_failed}' and "
+                    "preserving prior callbacks' committed state), whereas in "
+                    "'combined' mode "
+                    "serialization runs once at the end of the chain "
+                    f"(phase='{comb_phase}', "
                     f"culprit='{comb_culprit}')."
                 )
             else:
                 per_exec = self.per_callback_trace.executed_callbacks
                 comb_exec = self.combined_trace.executed_callbacks
                 explanations.append(
-                    f"[Execution Order Divergence] 'per_callback' executed {per_exec} "
+                    "[Execution Order Divergence] 'per_callback' executed "
+                    f"{per_exec} "
                     f"while 'combined' executed {comb_exec}."
                 )
 
-        # 3. Evidence-based detection of int -> float coercion and C016/C017 mutations
+        # 3. Evidence-based detection of int -> float coercion and C016/C017
+        # mutations
         coerced_num_keys: set[str] = set()
         for per_step, comb_step in zip(
-            self.per_callback_trace.steps, self.combined_trace.steps
+            self.per_callback_trace.steps,
+            self.combined_trace.steps,
+            strict=False,
         ):
             for s_key, per_val in per_step.state_after.items():
                 if s_key in ("_session", "session_metadata", "current_date"):
@@ -642,25 +692,35 @@ class ModeDiffReport:
             v_comb = diff_pair.get("combined")
             if coerced_num_keys:
                 explanations.append(
-                    f"[Protobuf Struct Number Coercion] State key '{key}' differs "
+                    f"[Protobuf Struct Number Coercion] State key '{key}' "
+                    "differs "
                     f"({v_per!r} vs {v_comb!r}); intermediate state key(s) "
-                    f"{sorted(coerced_num_keys)} had `int` coerced to `float` across "
-                    "Protobuf Struct round-trips in 'per_callback' mode while remaining "
+                    f"{sorted(coerced_num_keys)} had `int` coerced to `float` "
+                    "across "
+                    "Protobuf Struct round-trips in 'per_callback' mode while "
+                    "remaining "
                     "`int` in 'combined' mode."
                 )
             elif resp_muts:
                 explanations.append(
-                    f"[In-Place LlmResponse Mutation (C016)] State key '{key}' differs "
-                    f"({v_per!r} vs {v_comb!r}); callback(s) {resp_muts} mutated "
-                    "`llm_response` in-place while returning `None` (visible to later "
-                    "callbacks in 'combined' mode, discarded in 'per_callback' mode)."
+                    "[In-Place LlmResponse Mutation (C016)] State key "
+                    f"'{key}' differs "
+                    f"({v_per!r} vs {v_comb!r}); callback(s) {resp_muts} "
+                    "mutated "
+                    "`llm_response` in-place while returning `None` (visible "
+                    "to later "
+                    "callbacks in 'combined' mode, discarded in "
+                    "'per_callback' mode)."
                 )
             elif req_muts:
                 explanations.append(
-                    f"[Non-Persisted LlmRequest Mutation (C017)] State key '{key}' differs "
-                    f"({v_per!r} vs {v_comb!r}); callback(s) {req_muts} mutated "
+                    "[Non-Persisted LlmRequest Mutation (C017)] State key "
+                    f"'{key}' differs "
+                    f"({v_per!r} vs {v_comb!r}); callback(s) {req_muts} "
+                    "mutated "
                     "non-persisted `llm_request` fields while returning `None` "
-                    "(visible in 'combined' mode, discarded in 'per_callback' mode)."
+                    "(visible in 'combined' mode, discarded in 'per_callback' "
+                    "mode)."
                 )
             elif not self.combined_trace.warnings:
                 explanations.append(
@@ -733,7 +793,9 @@ class SessionMetricsSummary:
         label: str = "local",
         model_name: str | None = None,
     ) -> SessionMetricsSummary:
-        """Aggregates a sequence of `TurnTrace` objects into a `SessionMetricsSummary`."""
+        """Aggregates a sequence of `TurnTrace` objects into a
+        `SessionMetricsSummary`.
+        """
         models_seen: list[str] = []
         agents_seen: list[str] = []
         for t in turns:
@@ -784,7 +846,9 @@ class SessionMetricsSummary:
         candidates_tokens: int = 0,
         total_tokens: int = 0,
     ) -> SessionMetricsSummary:
-        """Constructs a `SessionMetricsSummary` from cloud session turn outputs."""
+        """Constructs a `SessionMetricsSummary` from cloud session turn
+        outputs.
+        """
         turns_n = len(turn_outputs)
         llm_calls = 0
         tool_calls = 0
@@ -823,7 +887,9 @@ class SessionMetricsSummary:
 
 @dataclasses.dataclass
 class BenchmarkComparisonReport:
-    """Quantitative comparison between baseline (e.g. cloud CES) and candidate runs."""
+    """Quantitative comparison between baseline (e.g. cloud CES) and candidate
+    runs.
+    """
 
     baseline: SessionMetricsSummary
     candidates: list[SessionMetricsSummary] = dataclasses.field(
@@ -837,7 +903,9 @@ class BenchmarkComparisonReport:
 
     @property
     def summaries(self) -> dict[str, SessionMetricsSummary]:
-        """Mapping of summary label to `SessionMetricsSummary` (baseline + candidates)."""
+        """Mapping of summary label to `SessionMetricsSummary` (baseline +
+        candidates).
+        """
         out: dict[str, SessionMetricsSummary] = {
             self.baseline.label: self.baseline
         }
@@ -866,7 +934,9 @@ class BenchmarkComparisonReport:
         return self.summaries.items()
 
     def speedup_vs_baseline(self, candidate_index: int = 0) -> float | None:
-        """Returns `baseline.total_duration_ms / candidate.total_duration_ms`."""
+        """Returns `baseline.total_duration_ms /
+        candidate.total_duration_ms`.
+        """
         if candidate_index < 0 or candidate_index >= len(self.candidates):
             raise IndexError(
                 f"candidate_index {candidate_index} out of range for "
@@ -894,9 +964,7 @@ class BenchmarkComparisonReport:
 
     def to_dict(self) -> dict[str, Any]:
         """Serializes the comparison report into a structured dictionary."""
-        summaries_dict = {
-            k: s.to_dict() for k, s in self.summaries.items()
-        }
+        summaries_dict = {k: s.to_dict() for k, s in self.summaries.items()}
         deltas: dict[str, dict[str, Any]] = {}
         base = self.baseline
         for idx, cand in enumerate(self.candidates):
@@ -931,8 +999,10 @@ class BenchmarkComparisonReport:
         }
 
     def to_dataframe(self) -> Any:
-        """Converts all summaries and relative deltas into a `pandas.DataFrame`."""
-        import pandas as pd
+        """Converts all summaries and relative deltas into a
+        `pandas.DataFrame`.
+        """
+        import pandas as pd  # noqa: PLC0415
 
         rows: list[dict[str, Any]] = []
         base = self.baseline
@@ -947,9 +1017,7 @@ class BenchmarkComparisonReport:
         base_row["token_ratio_vs_baseline"] = (
             1.0 if base.total_tokens > 0 else None
         )
-        base_row["token_savings_ratio"] = (
-            0.0 if base.total_tokens > 0 else None
-        )
+        base_row["token_savings_ratio"] = 0.0 if base.total_tokens > 0 else None
         rows.append(base_row)
 
         for idx, cand in enumerate(self.candidates):
@@ -971,7 +1039,9 @@ class BenchmarkComparisonReport:
         return pd.DataFrame(rows)
 
     def to_markdown_table(self) -> str:
-        """Renders a GitHub-flavored Markdown table comparing latency & tokens."""
+        """Renders a GitHub-flavored Markdown table comparing latency &
+        tokens.
+        """
         headers = (
             "| Label | Turns | LLM Calls | Tool Calls "
             "| Callback Time (ms) | LLM Time (ms) | Total Time (ms) "
@@ -991,7 +1061,8 @@ class BenchmarkComparisonReport:
         ) -> str:
             cb_str = (
                 f"{s.callback_duration_ms:,.1f}"
-                if s.callback_duration_ms > 0.0 or s.callback_execution_count > 0
+                if s.callback_duration_ms > 0.0
+                or s.callback_execution_count > 0
                 else "-"
             )
             llm_str = (
@@ -1046,11 +1117,10 @@ def _coerce_metrics_summary(
     if isinstance(item, TurnTrace):
         return SessionMetricsSummary.from_turns([item], label=default_label)
     if isinstance(item, Sequence) and not isinstance(item, (str, bytes)):
-        return SessionMetricsSummary.from_turns(
-            list(item), label=default_label
-        )
+        return SessionMetricsSummary.from_turns(list(item), label=default_label)
     raise TypeError(
-        f"Expected SessionMetricsSummary, SessionSimulator, or Sequence[TurnTrace], "
+        "Expected SessionMetricsSummary, SessionSimulator, or "
+        "Sequence[TurnTrace], "
         f"got {type(item).__name__}"
     )
 
@@ -1060,24 +1130,30 @@ def compare_execution_metrics(
     *candidates: SessionMetricsSummary | Sequence[TurnTrace] | Any,
     baseline: str | None = None,
 ) -> BenchmarkComparisonReport:
-    """Builds a `BenchmarkComparisonReport` comparing baseline and candidate runs.
+    """Builds a `BenchmarkComparisonReport` comparing baseline and candidate
+    runs.
 
     Supports both:
     - `compare_execution_metrics(baseline_summary, cand1, cand2, ...)`
-    - `compare_execution_metrics({"run_a": turns_a, "run_b": turns_b}, baseline="run_a")`
+    - `compare_execution_metrics({"run_a": turns_a, "run_b": turns_b},
+      baseline="run_a")`
     """
     if isinstance(first, dict) and not candidates:
         if not first:
-            raise ValueError("compare_execution_metrics requires at least one run.")
+            raise ValueError(
+                "compare_execution_metrics requires at least one run."
+            )
         coerced_map: dict[str, SessionMetricsSummary] = {
             str(lbl): _coerce_metrics_summary(val, str(lbl))
             for lbl, val in first.items()
         }
-        base_key = baseline if (baseline and baseline in coerced_map) else next(iter(coerced_map))
+        base_key = (
+            baseline
+            if (baseline and baseline in coerced_map)
+            else next(iter(coerced_map))
+        )
         base_summary = coerced_map[base_key]
-        cand_summaries = [
-            s for k, s in coerced_map.items() if k != base_key
-        ]
+        cand_summaries = [s for k, s in coerced_map.items() if k != base_key]
         return BenchmarkComparisonReport(
             baseline=base_summary,
             candidates=cand_summaries,

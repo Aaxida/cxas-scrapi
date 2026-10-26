@@ -17,25 +17,31 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, patch
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+import pandas as pd
+import pytest
 
 from cxas_scrapi.cli.main import (
     get_parser,
+)
+from cxas_scrapi.cli.main import (
     test_callbacks as cli_test_callbacks,
 )
 from cxas_scrapi.evals.callback_evals import CHAIN_MODE_ENV, CallbackEvals
-import pandas as pd
-import pytest
 
 
 @patch("cxas_scrapi.evals.callback_evals.Apps")
 @patch("cxas_scrapi.evals.callback_evals.Agents")
 def test_callback_evals_single_callback_for_agent_supports_multiple_callbacks(
     mock_agents_cls: MagicMock, mock_apps_cls: MagicMock, tmp_path: Path
-):
+) -> None:
     """Verifies test_single_callback_for_agent chains global and agent callbacks."""
-    from google.cloud.ces_v1beta import types
+    from google.cloud.ces_v1beta import types  # noqa: PLC0415
 
     app_uri = "projects/p1/locations/us-central1/apps/app1"
     mock_agents = mock_agents_cls.return_value
@@ -120,16 +126,12 @@ def test_callback_evals_single_callback_for_agent_supports_multiple_callbacks(
 
 def test_callback_evals_mixed_discovery_filtering_and_dual_mode(
     tmp_path: Path,
-):
+) -> None:
     """Verifies test_all_callbacks_in_app_dir discovers both test.py and test_chain.py."""
     app_dir = tmp_path / "sample_app"
     agent_dir = app_dir / "agents" / "card_agent"
-    cb1_dir = (
-        agent_dir / "before_agent_callbacks" / "before_agent_callbacks_01"
-    )
-    cb2_dir = (
-        agent_dir / "before_agent_callbacks" / "before_agent_callbacks_02"
-    )
+    cb1_dir = agent_dir / "before_agent_callbacks" / "before_agent_callbacks_01"
+    cb2_dir = agent_dir / "before_agent_callbacks" / "before_agent_callbacks_02"
     bm_dir = agent_dir / "before_model_callbacks" / "before_model_callbacks_01"
     cb1_dir.mkdir(parents=True)
     cb2_dir.mkdir(parents=True)
@@ -248,7 +250,7 @@ def test_callback_evals_mixed_discovery_filtering_and_dual_mode(
 
 def test_cli_test_callbacks_argparse_and_skipped_status_handling(
     tmp_path: Path,
-):
+) -> None:
     """Verifies CLI test-callbacks parses --mode / --chain-only and ignores SKIPPED."""
     parser = get_parser()
     args = parser.parse_args(
@@ -306,7 +308,7 @@ def test_cli_test_callbacks_argparse_and_skipped_status_handling(
 
 def test_user_constructed_runner_in_test_chain_respects_mode_env(
     tmp_path: Path,
-):
+) -> None:
     """Verifies user-constructed runner in test_chain.py respects CHAIN_MODE_ENV."""
     assert CHAIN_MODE_ENV == "CXAS_CALLBACK_MODE"
 
@@ -363,9 +365,9 @@ def test_single_callback_for_agent_fetches_global_callbacks_and_app_config(
     mock_agents_cls: MagicMock,
     mock_apps_cls: MagicMock,
     tmp_path: Path,
-):
+) -> None:
     """Verifies test_single_callback_for_agent loads global callbacks and app config."""
-    from google.cloud.ces_v1beta import types
+    from google.cloud.ces_v1beta import types  # noqa: PLC0415
 
     app_uri = "projects/p1/locations/us-central1/apps/a1"
     mock_agents = mock_agents_cls.return_value
@@ -454,7 +456,7 @@ def test_single_callback_for_agent_fetches_global_callbacks_and_app_config(
 
 def test_callback_evals_and_cli_lint_and_compare_modes(
     tmp_path: Path,
-):
+) -> None:
     """Verifies CallbackEvals and CLI `--lint`, `--lint-only`, and `--compare-modes`."""
     app_dir = tmp_path / "m3_app"
     agent_dir = app_dir / "agents" / "demo_agent"
@@ -486,8 +488,7 @@ def test_callback_evals_and_cli_lint_and_compare_modes(
         "    ctx.state['b'] = box\n"
     )
     (cb2_dir / "python_code.py").write_text(
-        "def before_agent_callback(ctx):\n"
-        "    ctx.state['b']['items'].pop()\n"
+        "def before_agent_callback(ctx):\n    ctx.state['b']['items'].pop()\n"
     )
 
     evals = CallbackEvals()
@@ -519,10 +520,14 @@ def test_callback_evals_and_cli_lint_and_compare_modes(
 
 def test_compare_fixtures_statuses_and_cli_constraints(
     tmp_path: Path,
-):
+) -> None:
     """Verifies compare_all_callbacks statuses, fixtures, and CLI flag constraints."""
-    from cxas_scrapi.evals.callback_chain import CallbackChainRunner
-    from cxas_scrapi.utils.callback_libs import CallbackContext
+    from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+        CallbackChainRunner,
+    )
+    from cxas_scrapi.utils.callback_libs import (  # noqa: PLC0415
+        CallbackContext,
+    )
 
     app_dir = tmp_path / "r5_app"
     agent_dir = app_dir / "agents" / "budget_agent"
@@ -685,10 +690,12 @@ def test_compare_fixtures_statuses_and_cli_constraints(
 
 def test_fixture_dedup_session_init_bytes_and_fail_on(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-):
+) -> None:
     """Verifies fixture deduplication, session_initialized, Blob bytes, and --fail-on."""
-    from cxas_scrapi.evals.callback_chain import CallbackChainRunner
-    from cxas_scrapi.utils.callback_libs import (
+    from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+        CallbackChainRunner,
+    )
+    from cxas_scrapi.utils.callback_libs import (  # noqa: PLC0415
         Blob,
         CallbackContext,
         LlmResponse,
@@ -748,7 +755,9 @@ def test_fixture_dedup_session_init_bytes_and_fail_on(
     ctx.state.pop("v")
     _, tr = r.run_before_agent(ctx)
     assert tr.final_state["seen_v"] is False
-    fx_y2 = r.record_fixture(ctx, "before_agent", output_path=tmp_path / "y2.json")
+    fx_y2 = r.record_fixture(
+        ctx, "before_agent", output_path=tmp_path / "y2.json"
+    )
     rep_y2 = r.compare_modes_from_fixture(fx_y2)
     assert rep_y2.per_callback_trace.final_state["seen_v"] is False
 
@@ -769,10 +778,9 @@ def test_fixture_dedup_session_init_bytes_and_fail_on(
     ]
     assert b64_str == "iVBORw0KGgo="
     rep_y3 = r.compare_modes_from_fixture(fx_y3)
-    restored_bytes = (
-        rep_y3.per_callback_trace.effective_response.content.parts[0]
-        .inline_data.data
-    )
+    restored_bytes = rep_y3.per_callback_trace.effective_response.content.parts[
+        0
+    ].inline_data.data
     assert restored_bytes == raw_bytes
 
     with pytest.raises((TypeError, ValueError)):
@@ -824,7 +832,9 @@ def test_test_callbacks_llm_mutex_and_include_metrics(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """Verifies test-callbacks --llm mutex and CallbackEvals metrics summary."""
-    from cxas_scrapi.evals.callback_chain import SessionMetricsSummary
+    from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+        SessionMetricsSummary,
+    )
 
     app_dir = tmp_path / "cli_app"
     ag_dir = app_dir / "agents" / "root_agent"
@@ -1088,10 +1098,12 @@ def test_metrics_summaries_multi_agent_clear_mode_both_and_xdist_warning(
     assert (worker_sum.turn_count, worker_sum.total_tokens) == (1, 7)
 
 
-def test_caller_ctx_image_version_restoration_on_v2_runner():
+def test_caller_ctx_image_version_restoration_on_v2_runner() -> None:
     """Verifies caller ctx._image_version restoration after run_stage on a v2 runner."""
-    from cxas_scrapi.evals.callback_chain import CallbackChainRunner
-    from cxas_scrapi.utils.callback_libs import (
+    from cxas_scrapi.evals.callback_chain import (  # noqa: PLC0415
+        CallbackChainRunner,
+    )
+    from cxas_scrapi.utils.callback_libs import (  # noqa: PLC0415
         CallbackContext,
         Content,
         Event,

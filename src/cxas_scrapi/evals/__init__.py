@@ -161,9 +161,7 @@ def __getattr__(name: str) -> Any:
         val = getattr(mod, attr_name)
         globals()[name] = val
         return val
-    raise AttributeError(
-        f"module {__name__!r} has no attribute {name!r}"
-    )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 __all__ = [

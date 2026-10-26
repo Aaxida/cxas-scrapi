@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Re-exports Jest-style expectation matchers (`expect`, `expect_stage`, `expect_turn`, `expect_session`)."""
+"""Re-exports Jest-style matchers (`expect`, `expect_stage`, `expect_turn`)."""
 
 from __future__ import annotations
 

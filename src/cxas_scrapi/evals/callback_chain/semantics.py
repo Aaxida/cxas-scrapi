@@ -12,19 +12,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Runtime semantics for CES callback stages (V1 & V2 serialization, state diff, normalization)."""
+"""Runtime semantics for CES callback stages (V1 & V2 serialization, state diff,
+normalization).
+"""
 
 from __future__ import annotations
 
 import copy
 import datetime
 import json
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pydantic
 
-from cxas_scrapi.evals.callback_chain.traces import ImageVersion, StageType
 from cxas_scrapi.utils.callback_libs import (
     BaseModel,
     Content,
@@ -35,6 +36,9 @@ from cxas_scrapi.utils.callback_libs import (
     _ces_encoder,
     orjson,
 )
+
+if TYPE_CHECKING:
+    from cxas_scrapi.evals.callback_chain.traces import ImageVersion, StageType
 
 STAGE_TO_FUNC_NAME: dict[StageType, str] = {
     "before_agent": "before_agent_callback",
@@ -54,7 +58,8 @@ STAGE_TO_AGENT_JSON_KEYS: dict[StageType, tuple[str, ...]] = {
     "after_tool": ("afterToolCallbacks", "after_tool_callbacks"),
 }
 
-# App proto only defines global_before_model_callbacks (37) and global_after_model_callbacks (38).
+# App proto only defines global_before_model_callbacks (37) and
+# global_after_model_callbacks (38).
 STAGE_TO_GLOBAL_JSON_KEYS: dict[StageType, tuple[str, ...]] = {
     "before_model": (
         "globalBeforeModelCallbacks",
@@ -110,12 +115,12 @@ _STAGE_ALIASES: dict[str, StageType] = {
 class _V1CallbackResult(BaseModel):
     """Pydantic model validating callback result payloads in V1 sandbox mode."""
 
-    state: Optional[dict[str, Any]] = None
-    content: Optional[Content] = None
-    llm_request: Optional[LlmRequest] = None
-    llm_response: Optional[LlmResponse] = None
-    tool_input: Optional[dict[str, Any]] = None
-    tool_response: Optional[dict[str, Any]] = None
+    state: dict[str, Any] | None = None
+    content: Content | None = None
+    llm_request: LlmRequest | None = None
+    llm_response: LlmResponse | None = None
+    tool_input: dict[str, Any] | None = None
+    tool_response: dict[str, Any] | None = None
 
 
 _v1_dict_adapter: pydantic.TypeAdapter[dict[Any, Any]] = pydantic.TypeAdapter(
@@ -157,7 +162,8 @@ def format_current_date(
 
     Uses the pattern `yyyy-MM-dd['['VV']']`:
     - When `timeZone` is empty or UTC (`"UTC"` / `"Z"`): `"2026-10-16[Z]"`
-    - When `timeZone` is an IANA zone (e.g. `"Europe/Berlin"`): `"2026-10-16[Europe/Berlin]"`
+    - When `timeZone` is an IANA zone (e.g. `"Europe/Berlin"`):
+      `"2026-10-16[Europe/Berlin]"`
     """
     tz_str = (time_zone or "").strip()
     if not tz_str or tz_str.upper() in ("UTC", "Z", "GMT"):
@@ -178,10 +184,12 @@ def format_current_date(
 def dump_state_bytes(
     state: dict[str, Any], *, image_version: ImageVersion = "v1"
 ) -> bytes:
-    """Serializes `state` according to V1 (`pydantic.TypeAdapter(dict)`) or V2 (`orjson`).
+    """Serializes `state` according to V1 (`pydantic.TypeAdapter(dict)`) or V2
+    (`orjson`).
 
     - In `v1`: validates top-level keys via `_V1CallbackResult(state=state)`
-      (raising `pydantic.ValidationError` on top-level non-str keys) and dumps via
+      (raising `pydantic.ValidationError` on top-level non-str keys) and dumps
+      via
       `_v1_dict_adapter.dump_json(state)` (which coerces nested int keys to str,
       formats `datetime` as ISO, and converts `NaN`/`Inf` to `null`).
     - In `v2`: dumps via `orjson.dumps(state, default=_ces_encoder)` (which
@@ -197,9 +205,7 @@ def dump_state_bytes(
     return orjson.dumps(state, default=_ces_encoder)
 
 
-def json_round_trip(
-    value: Any, *, image_version: ImageVersion = "v1"
-) -> Any:
+def json_round_trip(value: Any, *, image_version: ImageVersion = "v1") -> Any:
     """Performs a sandbox-equivalent JSON serialize + deserialize round-trip."""
     if image_version == "v1" and isinstance(value, dict):
         raw_bytes = dump_state_bytes(value, image_version="v1")
@@ -229,7 +235,9 @@ def coerce_struct_numbers(value: Any) -> Any:
 def json_normalize_for_diff(
     value: Any, *, image_version: ImageVersion = "v1"
 ) -> Any:
-    """Normalizes values via JSON round-trip and float-coerces integral numbers for diffing."""
+    """Normalizes values via JSON round-trip and float-coerces integral numbers
+    for diffing.
+    """
 
     def _canonicalize_numbers(v: Any) -> Any:
         if isinstance(v, bool) or v is None:
@@ -257,19 +265,23 @@ def update_state_from_snapshot(
     simulate_struct_numbers: bool = True,
     image_version: ImageVersion = "v1",
 ) -> dict[str, Any]:
-    """Updates committed session state from a pre-step snapshot and mutated state.
+    """Updates committed session state from a pre-step snapshot and mutated
+    state.
 
     1. Serializes `mutated_state` through V1 (`pydantic`) or V2 (`orjson`).
-    2. When `simulate_struct_numbers=True`, converts integers in the round-tripped
+    2. When `simulate_struct_numbers=True`, converts integers in the
+       round-tripped
        struct to `float` matching Protobuf `Struct` number representation.
-    3. Removes keys that existed in `snapshot_before` but are absent in `new_state`.
+    3. Removes keys that existed in `snapshot_before` but are absent in
+       `new_state`.
     4. Removes keys whose value in `new_state` is `None`.
     5. Upserts all other keys from `new_state` into `committed_state`.
     """
     rt_state = json_round_trip(mutated_state, image_version=image_version)
     if not isinstance(rt_state, dict):
         raise TypeError(
-            f"callback_context.state must serialize to a JSON object, got {type(rt_state).__name__}"
+            "callback_context.state must serialize to a JSON object, got "
+            f"{type(rt_state).__name__}"
         )
     if simulate_struct_numbers:
         rt_state = coerce_struct_numbers(rt_state)
@@ -290,7 +302,9 @@ def update_state_from_snapshot(
 
 
 def detect_state_aliasing(state: dict[str, Any]) -> list[str]:
-    """Detects distinct top-level state keys that share a mutable container in memory."""
+    """Detects distinct top-level state keys that share a mutable container in
+    memory.
+    """
     container_to_top_keys: dict[int, set[str]] = {}
     ignored_top_keys = {"_session", "session_metadata"}
 
@@ -322,7 +336,8 @@ def detect_state_aliasing(state: dict[str, Any]) -> list[str]:
     warnings: list[str] = []
     for group in sorted(shared_groups):
         warnings.append(
-            f"State keys {list(group)} share the same mutable dict/list reference in memory."
+            f"State keys {list(group)} share the same mutable dict/list "
+            "reference in memory."
         )
     return warnings
 
@@ -332,10 +347,13 @@ def normalize_llm_response(
 ) -> LlmResponse:
     """Normalizes an `LlmResponse` returned by a model callback.
 
-    - In `v1`, `_CallbackResult(llm_response=raw_resp)` accepts a `dict` that conforms
-      to `LlmResponse` schema (`content`/`partial`/`turn_complete`); in `v2` (or invalid dicts),
+    - In `v1`, `_CallbackResult(llm_response=raw_resp)` accepts a `dict` that
+      conforms
+      to `LlmResponse` schema (`content`/`partial`/`turn_complete`); in `v2` (or
+      invalid dicts),
       requires an `LlmResponse` instance.
-    - Preserves `content` and `partial`; strips `turn_complete` (`turnComplete`).
+    - Preserves `content` and `partial`; strips `turn_complete`
+      (`turnComplete`).
     - Reorders `content.parts` so all non-`function_call` parts appear first,
       followed by all `function_call` parts.
     """
@@ -365,10 +383,12 @@ def normalize_llm_response(
             raw_resp = v1_res.llm_response
     if not isinstance(raw_resp, LlmResponse):
         raise TypeError(
-            f"Expected LlmResponse from model callback, got {type(raw_resp).__name__}"
+            "Expected LlmResponse from model callback, got "
+            f"{type(raw_resp).__name__}"
         )
 
-    # Stash binary thought_signature values before JSON round-trip so raw bytes survive
+    # Stash binary thought_signature values before JSON round-trip so raw bytes
+    # survive
     orig_sigs: list[bytes | str | None] = []
     safe_resp = copy.deepcopy(raw_resp)
     if safe_resp.content is not None and safe_resp.content.parts:
@@ -408,7 +428,9 @@ def normalize_llm_response(
 def normalize_agent_content(
     raw_content: Any, stage: StageType, *, image_version: ImageVersion = "v1"
 ) -> Content:
-    """Serializes and validates `Content` returned by `before_agent` / `after_agent`."""
+    """Serializes and validates `Content` returned by `before_agent` /
+    `after_agent`.
+    """
     if (
         image_version == "v1"
         and isinstance(raw_content, dict)
@@ -420,14 +442,16 @@ def normalize_agent_content(
             raw_content = v1_res.content
     if not isinstance(raw_content, Content):
         raise TypeError(
-            f"Expected Content from {stage} callback, got {type(raw_content).__name__}"
+            f"Expected Content from {stage} callback, got "
+            f"{type(raw_content).__name__}"
         )
     rt_dict = json_round_trip(raw_content, image_version="v2")
     return Content.model_validate(rt_dict)
 
 
 def validate_before_agent_result(content: Content) -> None:
-    """Validates the post-execution `Content` returned by a `before_agent` callback.
+    """Validates the post-execution `Content` returned by a `before_agent`
+    callback.
 
     In the CES runtime, this check runs after `state` is committed and outside
     the callback exception handler (so it always produces a hard
@@ -462,9 +486,11 @@ def apply_before_model_request_updates(
     - V1:
       - Returns early if both `config.system_instruction` is `None` and
         `config.excluded_tools` is `None`.
-      - Only updates `system_instruction` if `config.system_instruction` is not `None`.
+      - Only updates `system_instruction` if `config.system_instruction` is not
+        `None`.
     - V2:
-      - Unconditionally overwrites `system_instruction` whenever `config` is present
+      - Unconditionally overwrites `system_instruction` whenever `config` is
+        present
         (even if `config.system_instruction` is `None`).
     """
     safe_req = copy.deepcopy(mutated_request)
@@ -600,13 +626,17 @@ def validate_and_normalize_return(
     *,
     image_version: ImageVersion = "v1",
 ) -> Any:
-    """Validates and normalizes a callback's return value according to stage and image version.
+    """Validates and normalizes a callback's return value according to stage and
+    image version.
 
     For `before_tool` and `after_tool`:
-    - In `v1`: `_CallbackResult(tool_response=raw_ret)` validates that `raw_ret` is
-      `Optional[dict[str, Any]]` (raising `pydantic.ValidationError` on non-dict returns).
+    - In `v1`: `_CallbackResult(tool_response=raw_ret)` validates that `raw_ret`
+      is
+      `Optional[dict[str, Any]]` (raising `pydantic.ValidationError` on non-dict
+      returns).
       Then the runtime treats an empty dict `{}` as `None` (no override).
-    - In `v2`: the runtime treats both non-struct (non-dict) and empty struct `{}`
+    - In `v2`: the runtime treats both non-struct (non-dict) and empty struct
+      `{}`
       returns as `None` (continue without short-circuiting).
     """
     if raw_ret is None:

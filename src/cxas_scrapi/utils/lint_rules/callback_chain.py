@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Callback chain lint rules (C011–C019) integrated into `cxas lint`."""
+"""Callback chain lint rules (C011-C019) integrated into `cxas lint`."""
 
 from __future__ import annotations
 
@@ -33,11 +33,17 @@ from cxas_scrapi.evals.callback_chain.traces import (
     ImageVersion,
     StageType,
 )
-from cxas_scrapi.utils.linter import LintContext, LintResult, Rule, Severity, rule
+from cxas_scrapi.utils.linter import (
+    LintContext,
+    LintResult,
+    Rule,
+    Severity,
+    rule,
+)
 
 
 def _find_agent_dir(file_path: Path) -> Path | None:
-    """Finds the enclosing `agents/<agent_name>` directory for a callback file."""
+    """Finds the enclosing `agents/<agent_name>` dir for a callback file."""
     curr = file_path.parent
     for _ in range(5):
         if curr.parent.name == "agents":
@@ -63,7 +69,7 @@ def _infer_stage(file_path: Path, content: str) -> StageType | None:
 
 
 def _get_image_version_from_context(context: LintContext) -> ImageVersion:
-    """Extracts configured `image_version` from `context.options` (defaults to `'v1'`)."""
+    """Extracts configured `image_version` from `context.options`."""
     opts = getattr(context, "options", None) or {}
     raw_ver = opts.get("image_version", "v1")
     try:
@@ -78,27 +84,27 @@ def _run_agent_lint(
     image_version: ImageVersion,
     context: LintContext,
 ) -> list[CallbackChainLintFinding]:
-    """Loads `CallbackChainRunner` for `agent_dir`, runs `lint()`, and caches findings."""
+    """Loads `CallbackChainRunner` for `agent_dir` and caches findings."""
     cache: dict[tuple[str, str], list[CallbackChainLintFinding]] | None = (
         getattr(context, "_callback_chain_lint_cache", None)
     )
     if cache is None:
         cache = {}
-        setattr(context, "_callback_chain_lint_cache", cache)
+        context._callback_chain_lint_cache = cache  # type: ignore[attr-defined]
 
     global_cache: list[CallbackChainLintFinding] | None = getattr(
         context, "_callback_chain_global_findings", None
     )
     if global_cache is None:
         global_cache = []
-        setattr(context, "_callback_chain_global_findings", global_cache)
+        context._callback_chain_global_findings = global_cache  # type: ignore[attr-defined]
 
     load_errors: dict[str, str] | None = getattr(
         context, "_callback_chain_load_errors", None
     )
     if load_errors is None:
         load_errors = {}
-        setattr(context, "_callback_chain_load_errors", load_errors)
+        context._callback_chain_load_errors = load_errors  # type: ignore[attr-defined]
 
     resolved_agent = str(agent_dir.resolve())
     cache_key = (resolved_agent, image_version)
@@ -109,7 +115,8 @@ def _run_agent_lint(
                 app_dir=app_root,
                 image_version=image_version,
             )
-            # Fallback discovery for stage dirs when <agent>.json lacks callback entries
+            # Fallback discovery for stage dirs when <agent>.json lacks callback
+            # entries
             for st in STAGE_TO_FUNC_NAME:
                 if not runner.get_callbacks(st, include_disabled=True):
                     stage_dir = agent_dir / f"{st}_callbacks"
@@ -167,11 +174,10 @@ def _get_agent_chain_findings(
     content: str,
     context: LintContext,
 ) -> list[CallbackChainLintFinding]:
-    """Computes (and caches per agent on `context`) callback chain findings for `file_path`."""
+    """Computes and caches callback chain findings for `file_path`."""
     image_version = _get_image_version_from_context(context)
-    app_root = (
-        getattr(context, "app_root", None)
-        or getattr(context, "project_root", None)
+    app_root = getattr(context, "app_root", None) or getattr(
+        context, "project_root", None
     )
     agent_dir = _find_agent_dir(file_path)
 
@@ -192,10 +198,11 @@ def _get_agent_chain_findings(
             )
             if first_file_by_agent is None:
                 first_file_by_agent = {}
-                setattr(context, "_c019_first_file_by_agent", first_file_by_agent)
-            if first_file_by_agent.setdefault(
-                resolved_agent, target_resolved
-            ) == target_resolved:
+                context._c019_first_file_by_agent = first_file_by_agent  # type: ignore[attr-defined]
+            if (
+                first_file_by_agent.setdefault(resolved_agent, target_resolved)
+                == target_resolved
+            ):
                 return [
                     CallbackChainLintFinding(
                         rule_id="C019",
@@ -217,13 +224,16 @@ def _get_agent_chain_findings(
         if matched or file_path.is_file():
             return matched
 
-    # If `file_path` is a global callback file inside `app_root`, analyze agents in `app_root` first
+    # If `file_path` is a global callback file inside `app_root`, analyze agents
+    # in `app_root` first
     if app_root is not None and Path(app_root).is_dir():
         agents_root = Path(app_root) / "agents"
         if agents_root.is_dir():
             for ag_sub in sorted(agents_root.iterdir()):
                 if ag_sub.is_dir():
-                    _run_agent_lint(ag_sub, Path(app_root), image_version, context)
+                    _run_agent_lint(
+                        ag_sub, Path(app_root), image_version, context
+                    )
             global_cache: list[CallbackChainLintFinding] = getattr(
                 context, "_callback_chain_global_findings", []
             )
@@ -235,7 +245,8 @@ def _get_agent_chain_findings(
             if matched_global or file_path.is_file():
                 return matched_global
 
-    # Direct single-file fallback (e.g., unit test calling `rule.check` with synthetic path)
+    # Direct single-file fallback (e.g., unit test calling `rule.check` with
+    # synthetic path)
     stage = _infer_stage(file_path, content)
     if stage is None:
         return []
@@ -254,7 +265,7 @@ def _get_agent_chain_findings(
 
 
 class _BaseCallbackChainRule(Rule):
-    """Base adapter mapping `CallbackChainLintFinding` items to `cxas lint` `LintResult`."""
+    """Base adapter mapping `CallbackChainLintFinding` to `LintResult`."""
 
     def check(
         self, file_path: Path, content: str, context: LintContext
@@ -271,7 +282,7 @@ class _BaseCallbackChainRule(Rule):
         )
         if emitted_global is None:
             emitted_global = set()
-            setattr(context, "_emitted_global_callback_findings", emitted_global)
+            context._emitted_global_callback_findings = emitted_global  # type: ignore[attr-defined]
 
         for f in findings:
             if f.rule_id != self.id:
@@ -295,8 +306,9 @@ class _BaseCallbackChainRule(Rule):
                 )
             )
 
-        # Also surface any global callback findings discovered during agent chain analysis
-        # that Discovery.discover_callbacks() wouldn't visit directly outside `agents/`.
+        # Also surface any global callback findings discovered during agent
+        # chain analysis that Discovery.discover_callbacks() wouldn't visit
+        # directly outside `agents/`.
         global_cache: list[CallbackChainLintFinding] = getattr(
             context, "_callback_chain_global_findings", []
         )
@@ -334,7 +346,7 @@ class _BaseCallbackChainRule(Rule):
 
 @rule("callbacks")
 class UnconditionalShortCircuitRule(_BaseCallbackChainRule):
-    """C011: Callback unconditionally returns a non-None override when later callbacks exist."""
+    """C011: Callback unconditionally returns a non-None override."""
 
     id = "C011"
     name = "unconditional-callback-short-circuit"
@@ -347,39 +359,41 @@ class UnconditionalShortCircuitRule(_BaseCallbackChainRule):
 
 @rule("callbacks")
 class SharedStateReferenceAliasingRule(_BaseCallbackChainRule):
-    """C012: Mutable local variable assigned to multiple state keys without copy/deepcopy."""
+    """C012: Mutable local variable assigned to multiple state keys."""
 
     id = "C012"
     name = "shared-state-reference-aliasing"
     description = (
-        "Mutable local variable is assigned to multiple session state keys without "
-        "`copy`/`deepcopy`, creating a shared reference aliasing hazard in 'combined' mode."
+        "Mutable local variable is assigned to multiple session state keys "
+        "without `copy`/`deepcopy`, creating a shared reference aliasing "
+        "hazard in 'combined' mode."
     )
     default_severity = Severity.WARNING
 
 
 @rule("callbacks")
 class UndeclaredStateSubscriptReadRule(_BaseCallbackChainRule):
-    """C013: Direct subscript read `state['k']` on an undeclared and unwritten state key."""
+    """C013: Direct subscript read `state['k']` on an undeclared state key."""
 
     id = "C013"
     name = "undeclared-state-subscript-read"
     description = (
-        "Direct subscript read `state['k']` on a key not declared in `app.json` "
-        "and not written by any earlier or same-agent callback."
+        "Direct subscript read `state['k']` on a key not declared in "
+        "`app.json` and not written by any earlier or same-agent callback."
     )
     default_severity = Severity.WARNING
 
 
 @rule("callbacks")
 class StateNoneAssignmentDeletionRule(_BaseCallbackChainRule):
-    """C014: Assigning `None` to `state['k']` deletes the key when downstream code reads `'k'`."""
+    """C014: Assigning `None` to `state['k']` deletes the key."""
 
     id = "C014"
     name = "state-none-deletes-key"
     description = (
         "Assigning `None` to `state['k']` deletes the key in the CES runtime, "
-        "affecting `'k' in state` or `state['k']` subscript reads in the same agent."
+        "affecting `'k' in state` or `state['k']` subscript reads in the same "
+        "agent."
     )
     default_severity = Severity.WARNING
 
@@ -391,28 +405,29 @@ class InvalidToolCallbackReturnRule(_BaseCallbackChainRule):
     id = "C015"
     name = "invalid-tool-callback-return"
     description = (
-        "Tool callback returns empty dict `{}` (which diverges between 'per_callback' and "
-        "'combined' modes) or a non-dict literal."
+        "Tool callback returns empty dict `{}` (which diverges between "
+        "'per_callback' and 'combined' modes) or a non-dict literal."
     )
     default_severity = Severity.WARNING
 
 
 @rule("callbacks")
 class UnreturnedLlmResponseMutationRule(_BaseCallbackChainRule):
-    """C016: `after_model` callback mutates `llm_response` in-place on a path returning `None`."""
+    """C016: `after_model` callback mutates `llm_response` without return."""
 
     id = "C016"
     name = "unreturned-llm-response-mutation"
     description = (
-        "`after_model` callback mutates `llm_response` in-place on a control-flow path "
-        "that returns `None`; in-place mutations are discarded unless the response is returned."
+        "`after_model` callback mutates `llm_response` in-place on a "
+        "control-flow path that returns `None`; in-place mutations are "
+        "discarded unless the response is returned."
     )
     default_severity = Severity.WARNING
 
 
 @rule("callbacks")
 class UnsupportedLlmRequestMutationRule(_BaseCallbackChainRule):
-    """C017: `before_model` callback mutates non-persisted `llm_request` fields."""
+    """C017: `before_model` callback mutates non-persisted `llm_request`."""
 
     id = "C017"
     name = "unsupported-llm-request-mutation"
@@ -425,7 +440,7 @@ class UnsupportedLlmRequestMutationRule(_BaseCallbackChainRule):
 
 @rule("callbacks")
 class NonStringStateDictKeyV2Rule(_BaseCallbackChainRule):
-    """C018: State assignment contains a non-string dict key under V2 image (`orjson`)."""
+    """C018: State assignment contains a non-string dict key under V2 image."""
 
     id = "C018"
     name = "non-string-state-dict-key-v2"
@@ -438,12 +453,12 @@ class NonStringStateDictKeyV2Rule(_BaseCallbackChainRule):
 
 @rule("callbacks")
 class CallbackChainLoadErrorRule(_BaseCallbackChainRule):
-    """C019: Failed to load agent or callback chain configuration (`agent.json` / `pythonCode`)."""
+    """C019: Failed to load agent or callback chain configuration."""
 
     id = "C019"
     name = "callback-chain-load-error"
     description = (
-        "Failed to load callback chain configuration or referenced `pythonCode` "
-        "file for an agent."
+        "Failed to load callback chain configuration or referenced "
+        "`pythonCode` file for an agent."
     )
     default_severity = Severity.ERROR

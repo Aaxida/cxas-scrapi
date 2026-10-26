@@ -27,9 +27,9 @@ import threading
 import time
 import traceback
 import uuid
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Callable
+from typing import TYPE_CHECKING, Any
 
 from cxas_scrapi.evals.callback_chain.hydration import (
     _ACTIVE_EXECUTION_CTX,
@@ -72,7 +72,8 @@ logger = logging.getLogger(__name__)
 
 
 class _TurnRunResult(tuple):  # type: ignore[type-arg]
-    """2-tuple `(LlmResponse | None, TurnTrace)` that also delegates `TurnTrace` attributes.
+    """2-tuple `(LlmResponse | None, TurnTrace)` that also delegates `TurnTrace`
+    attributes.
 
     Supports both legacy tuple unpacking:
         `resp, trace = runner.run_turn(...)`
@@ -83,7 +84,7 @@ class _TurnRunResult(tuple):  # type: ignore[type-arg]
 
     def __new__(
         cls, response: LlmResponse | None, trace: TurnTrace
-    ) -> "_TurnRunResult":
+    ) -> _TurnRunResult:
         return super().__new__(cls, (response, trace))
 
     @property
@@ -135,7 +136,9 @@ def invoke_tool_impl(
     working_tin: dict[str, Any],
     tool_ctx: ToolContext,
 ) -> Any:
-    """Invokes a tool implementation function with `(input, tool_ctx)` or `(input,)`."""
+    """Invokes a tool implementation function with `(input, tool_ctx)` or
+    `(input,)`.
+    """
     sig = inspect.signature(impl)
     params = list(sig.parameters.values())
     pos_params = [
@@ -171,8 +174,10 @@ def register_llm_resolver(
     *,
     overwrite: bool = True,
 ) -> None:
-    """Registers a callable that resolves a model name string into an LLM adapter."""
-    global _LLM_STRING_RESOLVER
+    """Registers a callable that resolves a model name string into an LLM
+    adapter.
+    """
+    global _LLM_STRING_RESOLVER  # noqa: PLW0603
     if not overwrite and _LLM_STRING_RESOLVER is not None:
         return
     _LLM_STRING_RESOLVER = resolver
@@ -185,7 +190,9 @@ def resolve_llm(
     | str
     | None,
 ) -> LlmResponse | Sequence[LlmResponse] | Callable[..., LlmResponse] | None:
-    """Resolves an LLM snapshot JSON path or model string via the registered LLM resolver."""
+    """Resolves an LLM snapshot JSON path or model string via the registered LLM
+    resolver.
+    """
     if isinstance(llm_spec, str):
         candidate_path = Path(llm_spec)
         if candidate_path.suffix.lower() == ".json":
@@ -193,13 +200,16 @@ def resolve_llm(
                 raise FileNotFoundError(
                     f"LLM snapshot file not found: {candidate_path}"
                 )
-            from cxas_scrapi.evals.callback_chain.mocks import MockLlm
+            from cxas_scrapi.evals.callback_chain.mocks import (  # noqa: PLC0415
+                MockLlm,
+            )
 
             return MockLlm.from_snapshot(candidate_path)
         if _LLM_STRING_RESOLVER is not None:
             return _LLM_STRING_RESOLVER(llm_spec)
         raise RuntimeError(
-            f"LLM string {llm_spec!r} requires an existing snapshot .json file path, "
+            f"LLM string {llm_spec!r} requires an existing snapshot .json "
+            "file path, "
             "a registered LLM adapter resolver via register_llm_resolver(...), "
             "or a MockLlm / callable passed directly."
         )
@@ -222,11 +232,13 @@ def invoke_mock_llm(
     - `None`: returns `LlmResponse.from_parts([Part.from_text("")])`
     - `str`: resolves via the registered LLM adapter resolver and invokes it
     - `LlmResponse`: returns a deep copy of `mock_llm`
-    - `Sequence[LlmResponse]`: returns `mock_llm[call_index]` (raises `IndexError`
+    - `Sequence[LlmResponse]`: returns `mock_llm[call_index]` (raises
+      `IndexError`
       if `call_index >= len(mock_llm)`)
     - `Callable`: invokes `mock_llm(llm_request, callback_context)` (or
       `(callback_context, llm_request)` if the first parameter is annotated as
-      `CallbackContext` or named `ctx` / `callback_context`), `mock_llm(llm_request)`,
+      `CallbackContext` or named `ctx` / `callback_context`),
+      `mock_llm(llm_request)`,
       or `mock_llm()`.
     """
     mock_llm = resolve_llm(mock_llm)
@@ -239,13 +251,15 @@ def invoke_mock_llm(
     ):
         if call_index >= len(mock_llm):
             raise IndexError(
-                f"mock_llm sequence exhausted: requested LLM call index {call_index}, "
+                "mock_llm sequence exhausted: requested LLM call index "
+                f"{call_index}, "
                 f"but sequence has length {len(mock_llm)}"
             )
         item = mock_llm[call_index]
         if not isinstance(item, LlmResponse):
             raise TypeError(
-                f"mock_llm sequence elements must be LlmResponse, got {type(item).__name__}"
+                "mock_llm sequence elements must be LlmResponse, got "
+                f"{type(item).__name__}"
             )
         return copy.deepcopy(item)
     if callable(mock_llm):
@@ -287,7 +301,8 @@ def invoke_mock_llm(
 
         if not isinstance(raw_resp, LlmResponse):
             raise TypeError(
-                f"mock_llm callable must return an LlmResponse, got {type(raw_resp).__name__}"
+                "mock_llm callable must return an LlmResponse, got "
+                f"{type(raw_resp).__name__}"
             )
         return copy.deepcopy(raw_resp)
 
@@ -341,28 +356,37 @@ def execute_turn(
 ) -> tuple[LlmResponse | None, TurnTrace]:
     """Executes a single-turn callback and tool pipeline.
 
-    Pipeline: `[before_agent ->] (before_model -> mock_llm -> after_model [-> tool_steps])*`.
+    Pipeline: `[before_agent ->] (before_model -> mock_llm -> after_model [->
+    tool_steps])*`.
 
     Runtime alignment notes:
     1. **Per-step fresh `LlmRequest` reconstruction**:
        Each LLM step starts from a fresh copy of the caller's base `llm_request`
-       plus accumulated conversation `contents` (tool call + tool response events).
-       Modifications made by `before_model` (such as `excluded_tools` filtering or
-       `system_instruction` updates) apply only to that single LLM step and do not
+       plus accumulated conversation `contents` (tool call + tool response
+       events).
+       Modifications made by `before_model` (such as `excluded_tools` filtering
+       or
+       `system_instruction` updates) apply only to that single LLM step and do
+       not
        bleed into subsequent LLM steps.
     2. **Unhandled tool callback errors abort the turn**:
        When `before_tool` or `after_tool` encounters an error that resolves to
-       `error_outcome == "error"` (`bt_out is None` / `at_out is None`, e.g., when
+       `error_outcome == "error"` (`bt_out is None` / `at_out is None`, e.g.,
+       when
        `enable_exception_handling=False` or `errorHandlingStrategy="NONE"` or
-       `"END_SESSION"` where tool stages do not emit an `end_session` payload), the
+       `"END_SESSION"` where tool stages do not emit an `end_session` payload),
+       the
        turn immediately aborts without running subsequent tools, follow-up LLM
        calls, or `after_agent`.
     3. **Tool implementation exceptions**:
        Exceptions thrown by a tool implementation fail the turn in CES because
        `on_tool_error_callback` is not exposed. When `strict=False`, `run_turn`
-       catches exceptions raised by `tool_impls`, records `ToolStepTrace.tool_error`
-       and `TurnTrace.error` (`failed_stage="tool_execution"`, `failed_tool=<name>`),
-       and aborts the turn; when `strict=True` (or via `turn_trace.raise_for_error()`),
+       catches exceptions raised by `tool_impls`, records
+       `ToolStepTrace.tool_error`
+       and `TurnTrace.error` (`failed_stage="tool_execution"`,
+       `failed_tool=<name>`),
+       and aborts the turn; when `strict=True` (or via
+       `turn_trace.raise_for_error()`),
        the exception is re-raised directly.
     """
     turn_t0 = time.perf_counter()
@@ -370,13 +394,15 @@ def execute_turn(
     if isinstance(ctx, (str, Content)):
         if user_input is not None:
             raise ValueError(
-                "Cannot specify both positional `user_input` and keyword `user_input` in `run_turn`."
+                "Cannot specify both positional `user_input` and keyword "
+                "`user_input` in `run_turn`."
             )
         user_input = ctx
         ctx = None
     elif ctx is not None and not isinstance(ctx, CallbackContext):
         raise TypeError(
-            f"Expected CallbackContext, str, Content, or None for `ctx`, got {type(ctx).__name__}"
+            "Expected CallbackContext, str, Content, or None for `ctx`, got "
+            f"{type(ctx).__name__}"
         )
 
     if ctx is not None and initial_state is not None:
@@ -385,7 +411,8 @@ def execute_turn(
         )
     if llm_callable is not None and (mock_llm is not None or llm is not None):
         raise ValueError(
-            "Cannot specify `llm_callable` together with `mock_llm` or `llm` in `run_turn`."
+            "Cannot specify `llm_callable` together with `mock_llm` or `llm` "
+            "in `run_turn`."
         )
 
     raw_llm_candidate = (
@@ -406,17 +433,17 @@ def execute_turn(
     if user_input is not None:
         if ctx.user_content is not None:
             raise ValueError(
-                "Cannot specify both `ctx.user_content` and `user_input` in `run_turn`."
+                "Cannot specify both `ctx.user_content` and `user_input` in "
+                "`run_turn`."
             )
         if isinstance(user_input, str):
-            u_content = Content(
-                role="user", parts=[Part.from_text(user_input)]
-            )
+            u_content = Content(role="user", parts=[Part.from_text(user_input)])
         elif isinstance(user_input, Content):
             u_content = copy.deepcopy(user_input)
         else:
             raise TypeError(
-                f"Expected str or Content for `user_input`, got {type(user_input).__name__}"
+                "Expected str or Content for `user_input`, got "
+                f"{type(user_input).__name__}"
             )
         ctx.user_content = copy.deepcopy(u_content)
         if llm_request is None:
@@ -479,9 +506,7 @@ def execute_turn(
     )
     resolved_user_input: str | None = None
     if ctx.user_content is not None and ctx.user_content.parts:
-        u_texts = [
-            p.text for p in ctx.user_content.parts if p.text is not None
-        ]
+        u_texts = [p.text for p in ctx.user_content.parts if p.text is not None]
         if u_texts:
             resolved_user_input = "\n".join(u_texts)
     auto_loaded_impls: dict[str, Callable[..., Any]] = (
@@ -498,9 +523,7 @@ def execute_turn(
     )
     eff_strict = runner.strict if strict is None else strict
     caller_request = (
-        copy.deepcopy(llm_request)
-        if llm_request is not None
-        else LlmRequest()
+        copy.deepcopy(llm_request) if llm_request is not None else LlmRequest()
     )
     base_request = copy.deepcopy(caller_request)
     history_contents: list[Content] = copy.deepcopy(
@@ -687,7 +710,8 @@ def execute_turn(
         int,
     ]:
         # Reconstruct a fresh LlmRequest from caller_request + events/history,
-        # injecting <state_update> blocks for in-scope dynamic variables and re-hydrating
+        # injecting <state_update> blocks for in-scope dynamic variables and
+        # re-hydrating
         # system_instruction and tools before each hop's before_model.
         step_req = copy.deepcopy(caller_request)
         step_req.contents = copy.deepcopy(history_contents)
@@ -782,9 +806,7 @@ def execute_turn(
                 raise
             err_str = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
             llm_error_info.append((err_str, exc))
-            step_model_name = (
-                getattr(eff_llm, "model", None) or eff_req.model
-            )
+            step_model_name = getattr(eff_llm, "model", None) or eff_req.model
             llm_steps.append(
                 LlmStepTrace(
                     step_index=step_idx,
@@ -1015,7 +1037,8 @@ def execute_turn(
             current_state = copy.deepcopy(bt_trace.final_state)
             ctx.state = copy.deepcopy(current_state)
 
-            # Unhandled before_tool error (bt_out is None) aborts the entire turn
+            # Unhandled before_tool error (bt_out is None) aborts the entire
+            # turn
             if bt_trace.error is not None and bt_out is None:
                 tool_steps.append(
                     ToolStepTrace(
@@ -1048,12 +1071,14 @@ def execute_turn(
             nested_log: list[dict[str, Any]] = []
 
             if short_circuited_bt:
-                # Pass before_tool override dict (including {"error": True}) into after_tool.
+                # Pass before_tool override dict (including {"error": True})
+                # into after_tool.
                 raw_t_resp = copy.deepcopy(bt_out)
             else:
-                # Precedence: auto_loaded_impls (local-python) < runner.mock_tools
-                # (env < local-python < ctor user mock_tools) < ctor _user_mock_tools
-                # < per-call mock_tools < per-call tool_impls
+                # Precedence: auto_loaded_impls (local-python) <
+                # runner.mock_tools (env < local-python < ctor user mock_tools)
+                # < ctor _user_mock_tools < per-call mock_tools < per-call
+                # tool_impls
                 eff_impls = {
                     **auto_loaded_impls,
                     **(runner.mock_tools or {}),
@@ -1098,19 +1123,20 @@ def execute_turn(
                 log_token = _ACTIVE_TOOL_CALL_LOG.set(nested_log)
                 try:
                     if callable(impl):
-                        inv_resp = invoke_tool_impl(
-                            impl, working_tin, tool_ctx
-                        )
+                        inv_resp = invoke_tool_impl(impl, working_tin, tool_ctx)
                     elif isinstance(impl, dict):
                         inv_resp = copy.deepcopy(impl)
                     else:
                         inv_resp = {"result": copy.deepcopy(impl)}
                 except Exception as exc:
                     tool_dur_ms = (time.perf_counter() - tool_t0) * 1000.0
-                    # Catch tool exception in non-strict mode, record on trace, and abort turn
+                    # Catch tool exception in non-strict mode, record on trace,
+                    # and abort turn
                     if eff_strict:
                         raise
-                    t_err = f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+                    t_err = (
+                        f"{type(exc).__name__}: {exc}\n{traceback.format_exc()}"
+                    )
                     tool_steps.append(
                         ToolStepTrace(
                             tool_name=fn_name,
@@ -1143,7 +1169,9 @@ def execute_turn(
                     _ACTIVE_EXECUTION_CTX.reset(ctx_token)
                     _ACTIVE_TOOL_CALL_LOG.reset(log_token)
 
-                if isinstance(inv_resp, (MockExternalResponse, ExternalResponse)):
+                if isinstance(
+                    inv_resp, (MockExternalResponse, ExternalResponse)
+                ):
                     try:
                         parsed_json = inv_resp.json()
                     except Exception:
@@ -1189,9 +1217,7 @@ def execute_turn(
                         tool_executed=tool_executed,
                         missing_impl=missing_impl,
                         raw_tool_response=(
-                            copy.deepcopy(raw_t_resp)
-                            if tool_executed
-                            else None
+                            copy.deepcopy(raw_t_resp) if tool_executed else None
                         ),
                         final_tool_response=None,
                         tool_duration_ms=tool_dur_ms,
@@ -1248,7 +1274,8 @@ def execute_turn(
             break
 
         # Append model FunctionCall content (preserving any thought /
-        # thought_signature parts) and user FunctionResponse content to history_contents
+        # thought_signature parts) and user FunctionResponse content to
+        # history_contents
         model_hop_parts = [
             p
             for p in (final_resp.content.parts or [])
@@ -1313,7 +1340,8 @@ def execute_turn(
             turn_error = after_trace.error
             failed_stage = "after_model"
 
-    # Unified post-processing: inspect final_resp for end_session / transfer_to_agent
+    # Unified post-processing: inspect final_resp for end_session /
+    # transfer_to_agent
     if (
         not stopped_by_error
         and end_session_info is None
@@ -1378,9 +1406,7 @@ def execute_turn(
         if aa_out is not None:
             final_resp = LlmResponse(content=aa_out)
             if final_event_appended and ctx.events:
-                prev_delta = copy.deepcopy(
-                    ctx.events[-1].actions.state_delta
-                )
+                prev_delta = copy.deepcopy(ctx.events[-1].actions.state_delta)
                 aa_ev = _make_event(
                     aa_out,
                     author=runner.agent_name or "model",
@@ -1453,7 +1479,9 @@ _COLLECTOR_LOCK = threading.Lock()
 def _push_active_turn_collector(
     collector: list[TurnTrace],
 ) -> contextvars.Token[list[TurnTrace] | None]:
-    """Registers an active turn collector in ContextVar and thread-fallback stack."""
+    """Registers an active turn collector in ContextVar and thread-fallback
+    stack.
+    """
     with _COLLECTOR_LOCK:
         _FALLBACK_COLLECTOR_STACK.append(collector)
     return _ACTIVE_TURN_COLLECTOR.set(collector)
@@ -1463,7 +1491,9 @@ def _pop_active_turn_collector(
     token: contextvars.Token[list[TurnTrace] | None] | None,
     collector: list[TurnTrace] | None = None,
 ) -> None:
-    """Restores the previous turn collector in ContextVar and thread-fallback stack."""
+    """Restores the previous turn collector in ContextVar and thread-fallback
+    stack.
+    """
     if token is not None:
         _ACTIVE_TURN_COLLECTOR.reset(token)
     else:
@@ -1479,7 +1509,9 @@ def _pop_active_turn_collector(
 
 
 def _record_collected_turn(turn_trace: TurnTrace) -> None:
-    """Appends `turn_trace` to the active ContextVar or thread-fallback collector."""
+    """Appends `turn_trace` to the active ContextVar or thread-fallback
+    collector.
+    """
     collector = _ACTIVE_TURN_COLLECTOR.get()
     if collector is None:
         with _COLLECTOR_LOCK:
@@ -1529,12 +1561,15 @@ def _merge_before_agent_traces(
 
 
 class SessionSimulator:
-    """Multi-turn session simulator preserving state, fallback count, events, and turn_index.
+    """Multi-turn session simulator preserving state, fallback count, events,
+    and turn_index.
 
     Note on `turn_index`:
     In the CES runtime, turn indices are 1-based (`previousTurnCount + 1`), so
-    turn 1 executes with `callback_context.turn_index == 1`, turn 2 with `2`, etc.
-    Before the first turn is executed (`len(sim.turns) == 0`), `sim.turn_index` is `0`.
+    turn 1 executes with `callback_context.turn_index == 1`, turn 2 with `2`,
+    etc.
+    Before the first turn is executed (`len(sim.turns) == 0`), `sim.turn_index`
+    is `0`.
     """
 
     def __init__(
@@ -1583,7 +1618,8 @@ class SessionSimulator:
             llm is not None or mock_llm is not None
         ):
             raise ValueError(
-                "Cannot specify `llm_callable` together with `llm` or `mock_llm`."
+                "Cannot specify `llm_callable` together with `llm` or "
+                "`mock_llm`."
             )
         if llm is None and llm_callable is not None:
             llm = llm_callable
@@ -1611,9 +1647,7 @@ class SessionSimulator:
         if runner.agent_name:
             self.runners_by_agent.setdefault(runner.agent_name, runner)
         raw_init_llm = (
-            llm
-            if llm is not None
-            else (os.environ.get(CHAIN_LLM_ENV) or None)
+            llm if llm is not None else (os.environ.get(CHAIN_LLM_ENV) or None)
         )
         self.llm = resolve_llm(raw_init_llm)
         self.hydrate_from_agent = hydrate_from_agent
@@ -1640,9 +1674,7 @@ class SessionSimulator:
         self._session_llm_call_index: int = 0
 
         eff_init_img = normalize_image_version(
-            image_version
-            if image_version is not None
-            else runner.image_version
+            image_version if image_version is not None else runner.image_version
         )
         if ctx is not None:
             self.ctx = ctx
@@ -1710,8 +1742,10 @@ class SessionSimulator:
         mock_tools: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> SessionSimulator:
-        """Constructs a `SessionSimulator` loading all agents under `app_dir / 'agents'`."""
-        from cxas_scrapi.evals.callback_chain.runner import (
+        """Constructs a `SessionSimulator` loading all agents under `app_dir /
+        'agents'`.
+        """
+        from cxas_scrapi.evals.callback_chain.runner import (  # noqa: PLC0415
             CallbackChainRunner as _RunnerCls,
         )
 
@@ -1738,7 +1772,8 @@ class SessionSimulator:
                 except Exception as exc:
                     warn_msg = (
                         f"[C019] Failed to load agent '{ag_dir.name}' in "
-                        f"SessionSimulator.from_app_dir: {type(exc).__name__}: {exc}"
+                        "SessionSimulator.from_app_dir: "
+                        f"{type(exc).__name__}: {exc}"
                     )
                     logger.warning(warn_msg)
                     load_warnings.append(warn_msg)
@@ -1792,11 +1827,15 @@ class SessionSimulator:
 
     @property
     def turn_index(self) -> int:
-        """Current 1-based turn index (`0` before the first turn, `1` on turn 1, etc.)."""
+        """Current 1-based turn index (`0` before the first turn, `1` on turn 1,
+        etc.).
+        """
         return self.ctx.turn_index
 
     def is_agent_entry(self) -> bool:
-        """Returns True on turn 1 or immediately after an unfollowed `transfer_to_agent`."""
+        """Returns True on turn 1 or immediately after an unfollowed
+        `transfer_to_agent`.
+        """
         if not self.turns:
             return True
         return self._entered_new_agent
@@ -1815,7 +1854,7 @@ class SessionSimulator:
             ):
                 return r
         if self.runner.app_dir is not None:
-            from cxas_scrapi.evals.callback_chain.runner import (
+            from cxas_scrapi.evals.callback_chain.runner import (  # noqa: PLC0415
                 CallbackChainRunner as _RunnerCls,
             )
 
@@ -1899,7 +1938,9 @@ class SessionSimulator:
         image_version: ImageVersion | None = None,
         strict: bool | None = None,
     ) -> TurnTrace:
-        """Executes one conversational turn and updates session state and history."""
+        """Executes one conversational turn and updates session state and
+        history.
+        """
         sim_turn_t0 = time.perf_counter()
         # Turn index is 1-based (1 on the first turn).
         self.ctx.turn_index += 1
@@ -1968,7 +2009,8 @@ class SessionSimulator:
             llm is not None or mock_llm is not None
         ):
             raise ValueError(
-                "Cannot specify `llm_callable` together with `llm` or `mock_llm`."
+                "Cannot specify `llm_callable` together with `llm` or "
+                "`mock_llm`."
             )
         if llm is None and llm_callable is not None:
             llm = llm_callable
@@ -1993,9 +2035,7 @@ class SessionSimulator:
             else hydrate_from_agent
         )
         eff_auto_tools = (
-            self.auto_load_tools
-            if auto_load_tools is None
-            else auto_load_tools
+            self.auto_load_tools if auto_load_tools is None else auto_load_tools
         )
         eff_auto_follow = (
             self.auto_follow_transfers
@@ -2021,9 +2061,7 @@ class SessionSimulator:
             else state_update_mode
         )
         eff_mode = self.mode if mode is None else mode
-        eff_img = (
-            self.image_version if image_version is None else image_version
-        )
+        eff_img = self.image_version if image_version is None else image_version
         self.ctx._image_version = normalize_image_version(
             eff_img if eff_img is not None else self.runner.image_version
         )
@@ -2067,8 +2105,9 @@ class SessionSimulator:
         while turn_trace.transfer_to:
             target_agent = turn_trace.transfer_to
 
-            # Always append a paired FunctionResponse event for transfer_to_agent
-            # so subsequent turns have valid (function_call, function_response) history
+            # Always append a paired FunctionResponse event for
+            # transfer_to_agent so subsequent turns have valid
+            # (function_call, function_response) history
             if self.ctx.events:
                 last_ev = self.ctx.events[-1]
                 if last_ev.content is not None:
@@ -2084,7 +2123,9 @@ class SessionSimulator:
                                 function_response=FunctionResponse(
                                     name="transfer_to_agent",
                                     response={
-                                        "result": f"Transferred to {target_agent}"
+                                        "result": (
+                                            f"Transferred to {target_agent}"
+                                        )
                                     },
                                     id=p.function_call.id
                                     if p.function_call
@@ -2106,7 +2147,8 @@ class SessionSimulator:
             next_runner = self._resolve_transfer_runner(target_agent)
             if next_runner is None:
                 warn_msg = (
-                    f"SessionSimulator: transfer_to_agent target '{target_agent}' "
+                    "SessionSimulator: transfer_to_agent target "
+                    f"'{target_agent}' "
                     f"not found in runners_by_agent "
                     f"(available: {sorted(self.runners_by_agent.keys())}); "
                     f"staying on agent '{self.runner.agent_name}'."
@@ -2128,9 +2170,11 @@ class SessionSimulator:
                 break
             if transfers_done >= eff_max_transfers:
                 max_warn = (
-                    f"SessionSimulator: max_agent_transfers={eff_max_transfers} "
+                    "SessionSimulator: "
+                    f"max_agent_transfers={eff_max_transfers} "
                     f"reached while transferring to '{target_agent}'; "
-                    f"stopping auto-follow (sim.runner is now '{next_label}' for the next turn)."
+                    f"stopping auto-follow (sim.runner is now '{next_label}' "
+                    "for the next turn)."
                 )
                 logger.warning(max_warn)
                 turn_trace.warnings.append(max_warn)
@@ -2204,9 +2248,7 @@ class SessionSimulator:
                 hop_trace.tool_steps
             )
             merged_warnings = list(turn_trace.warnings) + [
-                w
-                for w in hop_trace.warnings
-                if w not in turn_trace.warnings
+                w for w in hop_trace.warnings if w not in turn_trace.warnings
             ]
             turn_trace = TurnTrace(
                 mode=hop_trace.mode,
@@ -2267,7 +2309,9 @@ class SessionSimulator:
         self,
         label: str | None = None,
     ) -> SessionMetricsSummary:
-        """Computes aggregated latency and token usage metrics across all turns."""
+        """Computes aggregated latency and token usage metrics across all
+        turns.
+        """
         eff_label = label or (
             getattr(self.llm, "model", None)
             or self._runner_label(self.runner)

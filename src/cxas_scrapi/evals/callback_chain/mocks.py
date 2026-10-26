@@ -16,14 +16,14 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Mapping, Sequence
 import base64
 import copy
 import dataclasses
 import inspect
 import json
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from cxas_scrapi.evals.callback_chain.turn import invoke_tool_impl
 from cxas_scrapi.utils.callback_libs import (
@@ -49,7 +49,9 @@ def _get_resp_parts(resp: LlmResponse) -> list[Part]:
 
 
 def serialize_llm_response(resp: LlmResponse) -> dict[str, Any]:
-    """Serializes an `LlmResponse` (including `thought`, `thought_signature`, and `FunctionCall` parts) into a JSON-safe dict."""
+    """Serializes an `LlmResponse` (including `thought`, `thought_signature`,
+    and `FunctionCall` parts) into a JSON-safe dict.
+    """
     parts_out: list[dict[str, Any]] = []
     for p in _get_resp_parts(resp):
         p_dict: dict[str, Any] = {}
@@ -192,7 +194,9 @@ def _build_text_response(
     *,
     thought: str | None = None,
 ) -> LlmResponse:
-    """Constructs an `LlmResponse` containing optional thought and text parts."""
+    """Constructs an `LlmResponse` containing optional thought and text
+    parts.
+    """
     parts: list[Part] = []
     if thought is not None:
         parts.append(Part(text=thought, thought=True))
@@ -201,7 +205,9 @@ def _build_text_response(
 
 
 def _build_tool_call_response(
-    calls: Sequence[tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall],
+    calls: Sequence[
+        tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall
+    ],
     *,
     thought: str | None = None,
 ) -> LlmResponse:
@@ -241,7 +247,8 @@ def _build_tool_call_response(
         else:
             raise TypeError(
                 f"Unsupported tool call specification: {item!r}. "
-                "Expected (name, args_dict), {'name': ..., 'args': ...}, or FunctionCall."
+                "Expected (name, args_dict), {'name': ..., 'args': ...}, or "
+                "FunctionCall."
             )
     return LlmResponse.from_parts(parts)
 
@@ -297,9 +304,7 @@ def _invoke_rule_target(
                 f"got {type(out).__name__}"
             )
         return copy.deepcopy(out)
-    raise TypeError(
-        f"Unsupported MockLlm rule target: {type(rule).__name__}"
-    )
+    raise TypeError(f"Unsupported MockLlm rule target: {type(rule).__name__}")
 
 
 def _extract_full_prompt_text(req: LlmRequest) -> str:
@@ -326,7 +331,9 @@ def _request_follows_tool(
     *,
     contains: str | None = None,
 ) -> bool:
-    """Returns True if the latest user turn in `req.contents` has a FunctionResponse for `tool_name`."""
+    """Returns True if the latest user turn in `req.contents` has a
+    FunctionResponse for `tool_name`.
+    """
     if not req.contents:
         return False
     for content in reversed(req.contents):
@@ -363,7 +370,9 @@ class _PredicateRuleEntry:
 
 
 class _HopRuleBuilder:
-    """Fluent action builder bound to a specific 1-based LLM hop index (and optional 1-based turn)."""
+    """Fluent action builder bound to a specific 1-based LLM hop index (and
+    optional 1-based turn).
+    """
 
     def __init__(
         self,
@@ -374,13 +383,15 @@ class _HopRuleBuilder:
     ) -> None:
         if not isinstance(hop, int) or isinstance(hop, bool) or hop < 1:
             raise ValueError(
-                f"MockLlm.on_hop(n) requires a 1-based integer hop >= 1, got {hop!r}."
+                f"MockLlm.on_hop(n) requires a 1-based integer hop >= 1, "
+                f"got {hop!r}."
             )
         if turn is not None and (
             not isinstance(turn, int) or isinstance(turn, bool) or turn < 1
         ):
             raise ValueError(
-                f"MockLlm.on_turn(t) requires a 1-based integer turn >= 1, got {turn!r}."
+                f"MockLlm.on_turn(t) requires a 1-based integer turn >= 1, "
+                f"got {turn!r}."
             )
         self._parent = parent
         self._hop = hop
@@ -391,9 +402,7 @@ class _HopRuleBuilder:
             return self._parent._turn_hop_rules.get((self._turn, self._hop))
         return self._parent._hop_rules.get(self._hop)
 
-    def _set_rule(
-        self, rule: LlmResponse | Callable[..., LlmResponse]
-    ) -> None:
+    def _set_rule(self, rule: LlmResponse | Callable[..., LlmResponse]) -> None:
         if self._turn is not None:
             self._parent._turn_hop_rules[(self._turn, self._hop)] = rule
         else:
@@ -429,7 +438,7 @@ class _HopRuleBuilder:
                         id=f"call_{next_idx}",
                     )
                 )
-                combined_parts = list(existing.content.parts or []) + [new_part]
+                combined_parts = [*list(existing.content.parts or []), new_part]
                 self._set_rule(LlmResponse.from_parts(combined_parts))
                 return self._parent
 
@@ -438,7 +447,9 @@ class _HopRuleBuilder:
 
     def call_tools(
         self,
-        calls: Sequence[tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall],
+        calls: Sequence[
+            tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall
+        ],
         *,
         thought: str | None = None,
     ) -> MockLlm:
@@ -485,7 +496,8 @@ class _TurnRuleBuilder:
     def __init__(self, parent: MockLlm, turn: int) -> None:
         if not isinstance(turn, int) or isinstance(turn, bool) or turn < 1:
             raise ValueError(
-                f"MockLlm.on_turn(t) requires a 1-based integer turn >= 1, got {turn!r}."
+                f"MockLlm.on_turn(t) requires a 1-based integer turn >= 1, "
+                f"got {turn!r}."
             )
         self._parent = parent
         self._turn = turn
@@ -515,7 +527,9 @@ class _TurnRuleBuilder:
 
 
 class _PredicateRuleBuilder:
-    """Fluent action builder bound to a conditional request/context predicate."""
+    """Fluent action builder bound to a conditional request/context
+    predicate.
+    """
 
     def __init__(
         self,
@@ -564,7 +578,9 @@ class _PredicateRuleBuilder:
         /,
         **kwargs: Any,
     ) -> MockLlm:
-        """Scripts matching requests to emit a `FunctionCall` for `tool_name`."""
+        """Scripts matching requests to emit a `FunctionCall` for
+        `tool_name`.
+        """
         merged_args: dict[str, Any] = {}
         if _args_dict is not None:
             merged_args.update(copy.deepcopy(dict(_args_dict)))
@@ -575,11 +591,15 @@ class _PredicateRuleBuilder:
 
     def call_tools(
         self,
-        calls: Sequence[tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall],
+        calls: Sequence[
+            tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall
+        ],
         *,
         thought: str | None = None,
     ) -> MockLlm:
-        """Scripts matching requests to emit multiple parallel `FunctionCall` parts."""
+        """Scripts matching requests to emit multiple parallel `FunctionCall`
+        parts.
+        """
         resp = _build_tool_call_response(calls, thought=thought)
         return self._register(resp)
 
@@ -588,7 +608,9 @@ class _PredicateRuleBuilder:
         agent_name: str,
         **kwargs: Any,
     ) -> MockLlm:
-        """Scripts matching requests to call `transfer_to_agent(agent_name=...)`."""
+        """Scripts matching requests to call
+        `transfer_to_agent(agent_name=...)`.
+        """
         return self.call_tool(
             "transfer_to_agent", {"agent_name": agent_name, **kwargs}
         )
@@ -616,11 +638,14 @@ class _PredicateRuleBuilder:
 
 
 class MockLlm:
-    """Declarative fluent mock LLM builder for single-turn and multi-turn CES agent tests.
+    """Declarative fluent mock LLM builder for single-turn and multi-turn CES
+    agent tests.
 
-    Hop indices configured via `.on_hop(n)` are 1-based and reset automatically at the
+    Hop indices configured via `.on_hop(n)` are 1-based and reset automatically
+    at the
     start of each conversational turn in `run_turn` / `SessionSimulator`. Use
-    `.on_turn(t).on_hop(n)` for turn-specific overrides across multi-turn sessions.
+    `.on_turn(t).on_hop(n)` for turn-specific overrides across multi-turn
+    sessions.
 
     Example:
         ```python
@@ -635,7 +660,9 @@ class MockLlm:
     _is_cxas_mock_llm: bool = True
 
     def __init__(self, default_text: str | None = None) -> None:
-        self._hop_rules: dict[int, LlmResponse | Callable[..., LlmResponse]] = {}
+        self._hop_rules: dict[
+            int, LlmResponse | Callable[..., LlmResponse]
+        ] = {}
         self._turn_hop_rules: dict[
             tuple[int, int], LlmResponse | Callable[..., LlmResponse]
         ] = {}
@@ -666,7 +693,9 @@ class MockLlm:
         return len(self.requests)
 
     def reset(self) -> MockLlm:
-        """Clears recorded requests, contexts, responses, and resets cursors and counters."""
+        """Clears recorded requests, contexts, responses, and resets cursors and
+        counters.
+        """
         self.requests.clear()
         self.contexts.clear()
         self.responses.clear()
@@ -684,13 +713,17 @@ class MockLlm:
         *,
         default_text: str | None = None,
     ) -> MockLlm:
-        """Creates a `MockLlm` pre-populated with recorded `LlmResponse` hops (including thoughts and tool calls) for zero-latency offline replay."""
-        from cxas_scrapi.evals.callback_chain.traces import TurnTrace
+        """Creates a `MockLlm` pre-populated with recorded `LlmResponse` hops
+        (including thoughts and tool calls) for zero-latency offline replay.
+        """
+        from cxas_scrapi.evals.callback_chain.traces import (  # noqa: PLC0415
+            TurnTrace,
+        )
 
         mock = cls(default_text=default_text)
 
         if hasattr(source, "responses") and isinstance(
-            getattr(source, "responses"), Sequence
+            source.responses, Sequence
         ):
             for resp in source.responses:
                 mock.then_respond(deserialize_llm_response(resp))
@@ -777,7 +810,8 @@ class MockLlm:
                         mock.then_respond(deserialize_llm_response(item))
                     else:
                         raise TypeError(
-                            f"Unsupported snapshot sequence element type: {type(item).__name__}"
+                            f"Unsupported snapshot sequence element type: "
+                            f"{type(item).__name__}"
                         )
             return mock
 
@@ -791,7 +825,9 @@ class MockLlm:
         *,
         model: str | None = None,
     ) -> Path:
-        """Exports the responses recorded in `self.responses` (or scripted sequential responses) to a JSON snapshot file."""
+        """Exports the responses recorded in `self.responses` (or scripted
+        sequential responses) to a JSON snapshot file.
+        """
         resps = (
             list(self.responses)
             if self.responses
@@ -819,7 +855,9 @@ class MockLlm:
         return _HopRuleBuilder(self, hop)
 
     def on_turn(self, turn: int) -> _TurnRuleBuilder:
-        """Configures a response scoped to a specific 1-based conversational turn (`turn >= 1`)."""
+        """Configures a response scoped to a specific 1-based conversational
+        turn (`turn >= 1`).
+        """
         return _TurnRuleBuilder(self, turn)
 
     # Sequential rule builders
@@ -830,7 +868,9 @@ class MockLlm:
         /,
         **kwargs: Any,
     ) -> MockLlm:
-        """Appends a sequential tool call response for the next unscripted hop."""
+        """Appends a sequential tool call response for the next unscripted
+        hop.
+        """
         merged_args: dict[str, Any] = {}
         if _args_dict is not None:
             merged_args.update(copy.deepcopy(dict(_args_dict)))
@@ -843,11 +883,15 @@ class MockLlm:
 
     def then_call_tools(
         self,
-        calls: Sequence[tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall],
+        calls: Sequence[
+            tuple[str, Mapping[str, Any]] | Mapping[str, Any] | FunctionCall
+        ],
         *,
         thought: str | None = None,
     ) -> MockLlm:
-        """Appends a sequential multi-tool call response for the next unscripted hop."""
+        """Appends a sequential multi-tool call response for the next unscripted
+        hop.
+        """
         self._sequential_rules.append(
             _build_tool_call_response(calls, thought=thought)
         )
@@ -858,13 +902,17 @@ class MockLlm:
         agent_name: str,
         **kwargs: Any,
     ) -> MockLlm:
-        """Appends a sequential `transfer_to_agent` call for the next unscripted hop."""
+        """Appends a sequential `transfer_to_agent` call for the next unscripted
+        hop.
+        """
         return self.then_call_tool(
             "transfer_to_agent", {"agent_name": agent_name, **kwargs}
         )
 
     def then_end_session(self, **kwargs: Any) -> MockLlm:
-        """Appends a sequential `end_session` call for the next unscripted hop."""
+        """Appends a sequential `end_session` call for the next unscripted
+        hop.
+        """
         return self.then_call_tool("end_session", kwargs)
 
     def then_reply_text(
@@ -883,7 +931,9 @@ class MockLlm:
         self,
         response_or_callable: LlmResponse | Callable[..., LlmResponse],
     ) -> MockLlm:
-        """Appends a sequential `LlmResponse` or callable for the next unscripted hop."""
+        """Appends a sequential `LlmResponse` or callable for the next
+        unscripted hop.
+        """
         self._sequential_rules.append(response_or_callable)
         return self
 
@@ -925,7 +975,9 @@ class MockLlm:
         times: int | None = None,
         once: bool = False,
     ) -> _PredicateRuleBuilder:
-        """Matches when `substring` appears in `system_instruction` or `contents`."""
+        """Matches when `substring` appears in `system_instruction` or
+        `contents`.
+        """
 
         def _pred(req: LlmRequest, _ctx: CallbackContext) -> bool:
             return substring in _extract_full_prompt_text(req)
@@ -946,7 +998,9 @@ class MockLlm:
         times: int | None = None,
         once: bool = False,
     ) -> _PredicateRuleBuilder:
-        """Matches when the latest user turn in `contents` is a `FunctionResponse` from `tool_name`."""
+        """Matches when the latest user turn in `contents` is a
+        `FunctionResponse` from `tool_name`.
+        """
 
         def _pred(req: LlmRequest, _ctx: CallbackContext) -> bool:
             return _request_follows_tool(req, tool_name, contains=contains)
@@ -969,7 +1023,9 @@ class MockLlm:
         times: int | None = None,
         once: bool = False,
     ) -> _PredicateRuleBuilder:
-        """Matches when `predicate(llm_request, ctx)` (or `predicate(llm_request)`) returns True."""
+        """Matches when `predicate(llm_request, ctx)` (or
+        `predicate(llm_request)`) returns True.
+        """
         sig = inspect.signature(predicate)
         pos_params = [
             p
@@ -1003,7 +1059,9 @@ class MockLlm:
         *,
         thought: str | None = None,
     ) -> MockLlm:
-        """Configures a fallback text response when no hop, predicate, or sequential rule matches."""
+        """Configures a fallback text response when no hop, predicate, or
+        sequential rule matches.
+        """
         self._default_rule = _build_text_response(text, thought=thought)
         return self
 
@@ -1011,7 +1069,9 @@ class MockLlm:
         self,
         response_or_callable: LlmResponse | Callable[..., LlmResponse],
     ) -> MockLlm:
-        """Configures a fallback `LlmResponse` or callable when no other rule matches."""
+        """Configures a fallback `LlmResponse` or callable when no other rule
+        matches.
+        """
         self._default_rule = response_or_callable
         return self
 
@@ -1020,7 +1080,9 @@ class MockLlm:
         first_arg: LlmRequest | CallbackContext | None = None,
         second_arg: CallbackContext | LlmRequest | None = None,
     ) -> LlmResponse:
-        """Executes the mock LLM for the current hop and records request, context, and response."""
+        """Executes the mock LLM for the current hop and records request,
+        context, and response.
+        """
         if isinstance(first_arg, CallbackContext) and isinstance(
             second_arg, LlmRequest
         ):
@@ -1045,7 +1107,11 @@ class MockLlm:
         global_hop = len(self.requests) + 1
         self._turn_hop_counter += 1
         turn_hop = self._turn_hop_counter
-        eff_turn = self._turn_counter if self._turn_counter >= 1 else max(int(getattr(ctx, "turn_index", 0) or 0), 1)
+        eff_turn = (
+            self._turn_counter
+            if self._turn_counter >= 1
+            else max(int(getattr(ctx, "turn_index", 0) or 0), 1)
+        )
         self.requests.append(copy.deepcopy(req))
         self.contexts.append(copy.deepcopy(ctx))
 
@@ -1078,11 +1144,14 @@ class MockLlm:
             pred_descs = [e.description for e in self._predicate_rules]
             raise AssertionError(
                 f"MockLlm has no response configured for hop {turn_hop} "
-                f"(turn={eff_turn}, global_hop={global_hop}, agent={ctx.agent_name!r}). "
+                f"(turn={eff_turn}, global_hop={global_hop}, "
+                f"agent={ctx.agent_name!r}). "
                 f"Configured on_hop indices: {configured_hops}; "
                 f"predicate rules: {pred_descs}; "
-                f"sequential rules consumed: {self._seq_cursor}/{len(self._sequential_rules)}. "
-                f"Add `.on_hop({turn_hop}).reply_text(...)` or `.default_reply(...)`."
+                f"sequential rules consumed: "
+                f"{self._seq_cursor}/{len(self._sequential_rules)}. "
+                f"Add `.on_hop({turn_hop}).reply_text(...)` or "
+                f"`.default_reply(...)`."
             )
 
         resp = _invoke_rule_target(chosen_rule, req, ctx)
@@ -1091,11 +1160,14 @@ class MockLlm:
 
 
 class ToolSpy:
-    """Spy and mock wrapper for CES tool implementations (`tool_impls` and `mock_tools`).
+    """Spy and mock wrapper for CES tool implementations (`tool_impls` and
+    `mock_tools`).
 
-    Supports static return values (`returns=...`, including explicit `returns=None`),
+    Supports static return values (`returns=...`, including explicit
+    `returns=None`),
     wrapping real callables (`wraps=fn`), and raising or sequencing side effects
-    (`side_effect=...`), while recording all invocations in `.calls`, `.return_values`,
+    (`side_effect=...`), while recording all invocations in `.calls`,
+    `.return_values`,
     and `.exceptions` (aligned 1:1 with calls; `None` when a call succeeds).
     """
 
@@ -1123,7 +1195,9 @@ class ToolSpy:
         ):
             self._side_effect_items = list(side_effect)
         self.name = name or (
-            getattr(wraps, "__name__", None) if wraps is not None else "tool_spy"
+            getattr(wraps, "__name__", None)
+            if wraps is not None
+            else "tool_spy"
         )
         self.calls: list[dict[str, Any]] = []
         self._raw_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
@@ -1143,12 +1217,16 @@ class ToolSpy:
 
     @property
     def last_args(self) -> dict[str, Any] | None:
-        """Arguments dict from the most recent invocation, or `None` if never called."""
+        """Arguments dict from the most recent invocation, or `None` if never
+        called.
+        """
         return copy.deepcopy(self.calls[-1]) if self.calls else None
 
     @property
     def last_return_value(self) -> Any:
-        """Return value from the most recent successful invocation, or `None`."""
+        """Return value from the most recent successful invocation, or
+        `None`.
+        """
         return (
             copy.deepcopy(self.return_values[-1])
             if self.return_values
@@ -1156,7 +1234,9 @@ class ToolSpy:
         )
 
     def reset(self) -> ToolSpy:
-        """Clears recorded calls, contexts, return values, and exceptions, and rewinds `side_effect`."""
+        """Clears recorded calls, contexts, return values, and exceptions, and
+        rewinds `side_effect`.
+        """
         self.calls.clear()
         self._raw_calls.clear()
         self.contexts.clear()
@@ -1223,7 +1303,8 @@ class ToolSpy:
             if self._side_effect_items is not None:
                 if self._side_effect_index >= len(self._side_effect_items):
                     raise AssertionError(
-                        f"ToolSpy '{self.name}' side_effect sequence exhausted on call #{len(self.calls)}."
+                        f"ToolSpy '{self.name}' side_effect sequence "
+                        f"exhausted on call #{len(self.calls)}."
                     )
                 effect_item = self._side_effect_items[self._side_effect_index]
                 self._side_effect_index += 1
@@ -1285,13 +1366,14 @@ class ToolSpy:
 
     def assert_called(self) -> ToolSpy:
         """Asserts that the tool was called at least once."""
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
         if not self.called:
             raise AgentAssertionError(
-                f"Expected ToolSpy '{self.name}' to have been called at least once, "
+                f"Expected ToolSpy '{self.name}' to have been called at "
+                f"least once, "
                 "but it was never called.",
                 expected="call_count >= 1",
                 actual=0,
@@ -1300,14 +1382,15 @@ class ToolSpy:
 
     def assert_called_once(self) -> ToolSpy:
         """Asserts that the tool was called exactly once."""
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
         if self.call_count != 1:
             raise AgentAssertionError(
-                f"Expected ToolSpy '{self.name}' to have been called exactly once, "
-                f"but it was called {self.call_count} time(s). Calls: {self.calls!r}",
+                f"Expected ToolSpy '{self.name}' to have been called "
+                f"exactly once, but it was called {self.call_count} time(s). "
+                f"Calls: {self.calls!r}",
                 expected=1,
                 actual=self.call_count,
             )
@@ -1315,14 +1398,15 @@ class ToolSpy:
 
     def assert_not_called(self) -> ToolSpy:
         """Asserts that the tool was never called."""
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
         if self.called:
             raise AgentAssertionError(
                 f"Expected ToolSpy '{self.name}' not to be called, "
-                f"but it was called {self.call_count} time(s) with: {self.calls!r}",
+                f"but it was called {self.call_count} time(s) with: "
+                f"{self.calls!r}",
                 expected=0,
                 actual=self.call_count,
             )
@@ -1333,8 +1417,10 @@ class ToolSpy:
         *expected_args: Any,
         **expected_kwargs: Any,
     ) -> ToolSpy:
-        """Asserts that the most recent tool call exactly matched the expected arguments."""
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        """Asserts that the most recent tool call exactly matched the expected
+        arguments.
+        """
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
@@ -1374,7 +1460,8 @@ class ToolSpy:
                         "actual": actual[k],
                     }
             raise AgentAssertionError(
-                f"ToolSpy '{self.name}' last call arguments did not exactly match expected values.\n"
+                f"ToolSpy '{self.name}' last call arguments did not exactly "
+                f"match expected values.\n"
                 f"  Expected: {expected!r}\n"
                 f"  Actual:   {actual!r}\n"
                 f"  Diffs:    {mismatches!r}",
@@ -1389,8 +1476,10 @@ class ToolSpy:
         /,
         **expected_kwargs: Any,
     ) -> ToolSpy:
-        """Asserts that the most recent tool call contained at least the expected key-value pairs."""
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        """Asserts that the most recent tool call contained at least the
+        expected key-value pairs.
+        """
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
@@ -1411,7 +1500,8 @@ class ToolSpy:
 
         if mismatches:
             raise AgentAssertionError(
-                f"ToolSpy '{self.name}' last call arguments did not match expected subset.\n"
+                f"ToolSpy '{self.name}' last call arguments did not match "
+                f"expected subset.\n"
                 f"  Expected subset: {expected!r}\n"
                 f"  Actual:          {actual!r}\n"
                 f"  Diffs:           {mismatches!r}",
@@ -1425,6 +1515,8 @@ class ToolSpy:
         *expected_args: Any,
         **expected_kwargs: Any,
     ) -> ToolSpy:
-        """Asserts that the tool was called exactly once with the expected arguments."""
+        """Asserts that the tool was called exactly once with the expected
+        arguments.
+        """
         self.assert_called_once()
         return self.assert_called_with(*expected_args, **expected_kwargs)

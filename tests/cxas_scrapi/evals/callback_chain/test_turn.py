@@ -17,8 +17,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING, Any
 from unittest.mock import MagicMock
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+import pytest
 
 from cxas_scrapi.evals.callback_evals import (
     CallbackChainRunner,
@@ -37,10 +42,9 @@ from cxas_scrapi.utils.callback_libs import (
     Part,
     ToolContext,
 )
-import pytest
 
 
-def test_run_turn_full_pipeline_and_before_model_short_circuit():
+def test_run_turn_full_pipeline_and_before_model_short_circuit() -> None:
     """Verifies run_turn full pipeline, before_model short-circuit, and non-LlmResponse error."""
     bm1 = (
         "def before_model_callback(callback_context, llm_request):\n"
@@ -122,7 +126,7 @@ def test_run_turn_full_pipeline_and_before_model_short_circuit():
         )
 
 
-def test_run_turn_execute_tools_and_system_tools():
+def test_run_turn_execute_tools_and_system_tools() -> None:
     """Verifies run_turn full 5-stage loop, tool execution, and system tools."""
     ba = "def before_agent_callback(ctx):\n    ctx.state['ba_ran'] = True\n"
     aa = "def after_agent_callback(ctx):\n    ctx.state['aa_ran'] = True\n"
@@ -238,7 +242,7 @@ def test_run_turn_execute_tools_and_system_tools():
     assert len(tr_end.tool_steps) == 0
 
 
-def test_run_turn_adk_alignment_and_strict_tool_checks():
+def test_run_turn_adk_alignment_and_strict_tool_checks() -> None:
     """Verifies after_tool on before_tool short-circuit, multi-step history, and strict errors."""
     # before_tool short-circuit still invokes after_tool and appends history on hop 2
     bm = (
@@ -294,10 +298,7 @@ def test_run_turn_adk_alignment_and_strict_tool_checks():
         "        ])\n"
         "    return LlmResponse.from_parts([Part.from_text('short-circuit text')])\n"
     )
-    aa_rec = (
-        "def after_agent_callback(ctx):\n"
-        "    ctx.state['aa_ran'] = True\n"
-    )
+    aa_rec = "def after_agent_callback(ctx):\n    ctx.state['aa_ran'] = True\n"
     r_r3 = CallbackChainRunner.from_callbacks(
         {"before_model": [bm_end], "after_agent": [aa_rec]}, new_session=False
     )
@@ -354,7 +355,7 @@ def test_run_turn_adk_alignment_and_strict_tool_checks():
         )
 
 
-def test_run_turn_multi_step_request_isolation_and_error_handling():
+def test_run_turn_multi_step_request_isolation_and_error_handling() -> None:
     """Verifies multi-step request isolation, tool exceptions, and error handling strategies."""
     # --- Multi-step request isolation + llm_steps ---
     bm_m1 = (
@@ -461,10 +462,7 @@ def test_run_turn_multi_step_request_isolation_and_error_handling():
         "        parts=[Part.from_end_session(reason='ba_exit', escalated=True)],\n"
         "    )\n"
     )
-    aa_spy = (
-        "def after_agent_callback(ctx):\n"
-        "    ctx.state['aa_ran'] = True\n"
-    )
+    aa_spy = "def after_agent_callback(ctx):\n    ctx.state['aa_ran'] = True\n"
     runner_s1 = CallbackChainRunner.from_callbacks(
         {"before_agent": [("ba", ba_end)], "after_agent": [("aa", aa_spy)]},
         new_session=False,
@@ -507,7 +505,9 @@ def test_run_turn_multi_step_request_isolation_and_error_handling():
     assert tr_s4_none.error_outcome == "error"
 
 
-def test_session_simulator_multi_turn_state_events_and_fallback_carryover():
+def test_session_simulator_multi_turn_state_events_and_fallback_carryover() -> (
+    None
+):
     """Verifies SessionSimulator multi-turn state, event log, and fallback carryover."""
     ba = (
         "def before_agent_callback(ctx):\n"
@@ -571,7 +571,7 @@ def test_session_simulator_multi_turn_state_events_and_fallback_carryover():
     }
 
 
-def test_session_simulator_events_tools_fallback_and_transfer():
+def test_session_simulator_events_tools_fallback_and_transfer() -> None:
     """Verifies SessionSimulator Event log helpers, fallback count reset, and agent routing."""
     aa_code = (
         "def after_agent_callback(callback_context):\n"
@@ -607,7 +607,7 @@ def test_session_simulator_events_tools_fallback_and_transfer():
     sim = SessionSimulator(runner)
     step = [0]
 
-    def llm(req):
+    def llm(req: Any) -> LlmResponse:
         step[0] += 1
         if step[0] == 1:
             return LlmResponse.from_parts([Part.from_function_call("ping", {})])
@@ -624,7 +624,10 @@ def test_session_simulator_events_tools_fallback_and_transfer():
     assert sim.state["at_ran"] is True
     assert tt.consecutive_fallback_count_after == 0
     assert sim.consecutive_fallback_count == 0
-    assert [tuple( (r, list(ps)) for r, ps in [item] )[0] for item in sim.state["event_roles"]] == [
+    assert [
+        next((r, list(ps)) for r, ps in [item])
+        for item in sim.state["event_roles"]
+    ] == [
         ("user", ["text"]),
         ("model", ["fc"]),
         ("user", ["fr"]),
@@ -693,7 +696,7 @@ def test_session_simulator_events_tools_fallback_and_transfer():
 
 def test_function_response_author_and_runtime_event_helpers(
     tmp_path: Path,
-):
+) -> None:
     """Verifies function_response event author and SessionSimulator.from_app_dir warnings."""
     r = CallbackChainRunner.from_callbacks(
         {},
@@ -704,7 +707,7 @@ def test_function_response_author_and_runtime_event_helpers(
     sim = SessionSimulator(r)
     step = [0]
 
-    def llm(_req):
+    def llm(_req: Any) -> LlmResponse:
         step[0] += 1
         if step[0] == 1:
             return LlmResponse.from_parts(
@@ -757,5 +760,5 @@ def test_function_response_author_and_runtime_event_helpers(
     assert sim_app.current_agent == "good_agent"
     assert any("C019" in w and "bad_agent" in w for w in sim_app.warnings)
 
-    with pytest.raises(Exception):
+    with pytest.raises(Exception):  # noqa: B017, PT011
         SessionSimulator.from_app_dir(app_dir, strict=True)

@@ -12,10 +12,11 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Pytest plugin for automatic CES callback chain trace collection and snapshots."""
+"""Pytest plugin for CES callback chain trace collection and snapshots."""
 
 from __future__ import annotations
 
+import contextlib
 import dataclasses
 import os
 from pathlib import Path
@@ -50,11 +51,12 @@ from cxas_scrapi.evals.callback_chain.turn import (
 
 @dataclasses.dataclass
 class CxasTraceCollector:
-    """Per-test trace collector exposed via the `cxas_trace_collector` pytest fixture.
+    """Per-test trace collector exposed via `cxas_trace_collector` fixture.
 
-    Traces emitted from context-less background worker threads (e.g. `ThreadPoolExecutor`)
-    are attributed to the innermost active collector on the fallback stack; running
-    concurrent trace collectors across threads in the same process is not supported.
+    Traces emitted from context-less background worker threads (e.g.
+    `ThreadPoolExecutor`) are attributed to the innermost active collector on
+    the fallback stack; running concurrent trace collectors across threads in
+    the same process is not supported.
     """
 
     test_name: str
@@ -80,7 +82,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             {
                 "action": "store_true",
                 "default": False,
-                "help": "Update stored .snap.json snapshots with current trace outputs.",
+                "help": (
+                    "Update stored .snap.json snapshots with current trace "
+                    "outputs."
+                ),
             },
         ),
         (
@@ -88,7 +93,10 @@ def pytest_addoption(parser: pytest.Parser) -> None:
             {
                 "action": "store_true",
                 "default": False,
-                "help": "Fail when a snapshot entry is missing instead of creating it on the fly.",
+                "help": (
+                    "Fail when a snapshot entry is missing instead of creating "
+                    "it on the fly."
+                ),
             },
         ),
         (
@@ -98,22 +106,21 @@ def pytest_addoption(parser: pytest.Parser) -> None:
                 "default": None,
                 "metavar": "SNAPSHOT_OR_ID",
                 "help": (
-                    "Optional LLM snapshot JSON path or registered adapter identifier "
-                    "(sets CXAS_CALLBACK_LLM; live model strings require register_llm_resolver)."
+                    "Optional LLM snapshot JSON path or registered adapter "
+                    "identifier (sets CXAS_CALLBACK_LLM; live model strings "
+                    "require register_llm_resolver)."
                 ),
             },
         ),
     ]
     for opt_name, kwargs in options:
-        try:
-            group.addoption(opt_name, **kwargs)
-        except ValueError:
+        with contextlib.suppress(ValueError):
             # Option already registered (e.g., nested pytest invocation)
-            pass
+            group.addoption(opt_name, **kwargs)
 
 
 def pytest_configure(config: pytest.Config) -> None:
-    """Initializes session-wide trace storage and optional `--cxas-llm` environment variable."""
+    """Initializes session-wide trace storage and optional `--cxas-llm` env."""
     config._cxas_session_data = {  # type: ignore[attr-defined]
         "turn_traces": {},
         "stage_traces": {},
@@ -132,7 +139,7 @@ def pytest_configure(config: pytest.Config) -> None:
 def pytest_unconfigure(config: pytest.Config) -> None:
     """Restores `CXAS_CALLBACK_LLM` if overridden by `--cxas-llm`."""
     if hasattr(config, "_cxas_prev_llm_env"):
-        prev = getattr(config, "_cxas_prev_llm_env")
+        prev = config._cxas_prev_llm_env  # type: ignore[attr-defined]
         if prev is None:
             os.environ.pop(CHAIN_LLM_ENV, None)
         else:
@@ -140,7 +147,7 @@ def pytest_unconfigure(config: pytest.Config) -> None:
 
 
 def pytest_runtest_setup(item: pytest.Item) -> None:
-    """Pushes active trace collectors and snapshot context before each test runs."""
+    """Pushes active trace collectors and snapshot context before each test."""
     if getattr(item, "_cxas_tokens", None) is not None:
         return
     if _ACTIVE_SNAPSHOT_CONTEXT.get() is None:
@@ -156,9 +163,7 @@ def pytest_runtest_setup(item: pytest.Item) -> None:
     update_snaps = bool(
         item.config.getoption("--cxas-update-snapshots", default=False)
     )
-    ci_mode = bool(
-        item.config.getoption("--cxas-snapshot-ci", default=False)
-    )
+    ci_mode = bool(item.config.getoption("--cxas-snapshot-ci", default=False))
 
     orig_test_file = os.environ.get("CXAS_ORIGINAL_TEST_FILE")
     test_file_path = (
@@ -197,7 +202,7 @@ def pytest_runtest_makereport(
 def pytest_runtest_teardown(
     item: pytest.Item, nextitem: pytest.Item | None
 ) -> None:
-    """Pops active collectors and aggregates traces into session-level storage."""
+    """Pops active collectors and aggregates traces into session storage."""
     tokens = getattr(item, "_cxas_tokens", None)
     collector: CxasTraceCollector | None = getattr(
         item, "_cxas_collector", None
@@ -241,9 +246,7 @@ def pytest_runtest_teardown(
     if collector.turn_traces:
         session_data["turn_traces"][item.nodeid] = list(collector.turn_traces)
     if collector.stage_traces:
-        session_data["stage_traces"][item.nodeid] = list(
-            collector.stage_traces
-        )
+        session_data["stage_traces"][item.nodeid] = list(collector.stage_traces)
     for idx, md in enumerate(collector.mode_diffs, 1):
         lbl = (
             f"{item.nodeid} ({md.stage})"
@@ -264,7 +267,7 @@ def pytest_runtest_teardown(
 
 @pytest.fixture
 def cxas_trace_collector(request: pytest.FixtureRequest) -> CxasTraceCollector:
-    """Fixture providing access to all traces collected during the current test."""
+    """Fixture providing access to traces collected during the current test."""
     collector = getattr(request.node, "_cxas_collector", None)
     if isinstance(collector, CxasTraceCollector):
         return collector
@@ -277,7 +280,7 @@ def cxas_trace_collector(request: pytest.FixtureRequest) -> CxasTraceCollector:
 
 @pytest.fixture
 def cxas_snapshot(request: pytest.FixtureRequest) -> SnapshotManager:
-    """Fixture providing a `SnapshotManager` bound to the current test's `--cxas-update-snapshots` flag."""
+    """Fixture providing a `SnapshotManager` for `--cxas-update-snapshots`."""
     update_flag = bool(
         request.config.getoption("--cxas-update-snapshots", default=False)
     )

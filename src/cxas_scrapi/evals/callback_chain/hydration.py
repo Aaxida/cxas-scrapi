@@ -12,20 +12,22 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Local agent instruction rendering, tool schema extraction, and Python tool loading."""
+"""Local agent instruction rendering, tool schema extraction, and Python tool
+loading.
+"""
 
 from __future__ import annotations
 
 import ast
-from collections.abc import Mapping, Sequence
+import contextlib
 import contextvars
 import copy
-from dataclasses import dataclass, field
 import inspect
 import json
-from pathlib import Path
 import re
-from typing import TYPE_CHECKING, Any, Callable, Literal
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any, Literal
 
 from cxas_scrapi.utils import callback_libs
 from cxas_scrapi.utils.callback_libs import (
@@ -44,29 +46,37 @@ from cxas_scrapi.utils.callback_libs import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
+
     from cxas_scrapi.evals.callback_chain.runner import CallbackChainRunner
 
 _ACTIVE_EXECUTION_CTX: contextvars.ContextVar[Any] = contextvars.ContextVar(
     "_ACTIVE_EXECUTION_CTX", default=None
 )
-_ACTIVE_TOOL_CALL_LOG: contextvars.ContextVar[
-    list[dict[str, Any]] | None
-] = contextvars.ContextVar("_ACTIVE_TOOL_CALL_LOG", default=None)
+_ACTIVE_TOOL_CALL_LOG: contextvars.ContextVar[list[dict[str, Any]] | None] = (
+    contextvars.ContextVar("_ACTIVE_TOOL_CALL_LOG", default=None)
+)
 
 
 def get_active_execution_context() -> Any:
-    """Returns the active `CallbackContext` during callback or tool execution, or `None`."""
+    """Returns the active `CallbackContext` during callback or tool execution,
+    or `None`.
+    """
     return _ACTIVE_EXECUTION_CTX.get()
 
 
 def get_active_tool_call_log() -> list[dict[str, Any]] | None:
-    """Returns the active chronological tool call log during callback or tool execution, or `None`."""
+    """Returns the active chronological tool call log during callback or tool
+    execution, or `None`.
+    """
     return _ACTIVE_TOOL_CALL_LOG.get()
 
 
 @dataclass
 class HydratedAgentConfig:
-    """Hydrated agent configuration including auto-loaded local Python and environment tools."""
+    """Hydrated agent configuration including auto-loaded local Python and
+    environment tools.
+    """
 
     agent_name: str = ""
     agent_dir: Path | None = None
@@ -77,6 +87,7 @@ class HydratedAgentConfig:
         default_factory=dict
     )
     env_tools: dict[str, Callable[..., Any]] = field(default_factory=dict)
+
 
 StateUpdateMode = Literal["rearrange", "in_place", "current_state", "none"]
 STATE_REMOVED_SENTINEL = "__ADK_SENTINEL_REMOVED__"
@@ -226,19 +237,15 @@ def coerce_runner_inputs(
     if not ag_cfg and ag_dir is not None:
         ag_json = ag_dir / f"{ag_dir.name}.json"
         if ag_json.is_file():
-            try:
+            with contextlib.suppress(Exception):
                 ag_cfg = json.loads(ag_json.read_text(encoding="utf-8"))
-            except Exception:
-                pass
 
     ap_cfg = dict(app_config or {})
     if not ap_cfg and ap_dir is not None:
         ap_json = ap_dir / "app.json"
         if ap_json.is_file():
-            try:
+            with contextlib.suppress(Exception):
                 ap_cfg = json.loads(ap_json.read_text(encoding="utf-8"))
-            except Exception:
-                pass
 
     return ag_dir, ap_dir, ag_cfg, ap_cfg, "TEXT", "API", {}
 
@@ -268,7 +275,8 @@ def read_instruction_source(
                 candidate = base / val_str
                 if candidate.is_file():
                     return candidate.read_text(encoding="utf-8")
-        # If it is not a file path (or does not end with .txt/.md), treat as inline instruction
+        # If it is not a file path (or does not end with .txt/.md), treat as
+        # inline instruction
         if not val_str.endswith((".txt", ".md")) or (
             primary_dir is None and secondary_dir is None
         ):
@@ -306,7 +314,9 @@ def _lookup_state_path(path: str, state: dict[str, Any]) -> tuple[bool, Any]:
 
 
 def _format_template_value(val: Any) -> str:
-    """Formats a state value for instruction substitution aligned with CES runtime."""
+    """Formats a state value for instruction substitution aligned with CES
+    runtime.
+    """
     if isinstance(val, bool):
         return "true" if val else "false"
     if isinstance(val, dict):
@@ -324,7 +334,9 @@ def _resolve_template_engine(
     agent_config: dict[str, Any],
     app_config: dict[str, Any],
 ) -> Literal["variables_only", "full"]:
-    """Determines whether to use `variables_only` (CES default) or `full` engine."""
+    """Determines whether to use `variables_only` (CES default) or `full`
+    engine.
+    """
     if template_engine in ("variables_only", "full"):
         return template_engine
     candidates: list[Any] = [
@@ -340,7 +352,10 @@ def _resolve_template_engine(
         or []
     )
     for decl in var_decls:
-        if isinstance(decl, dict) and decl.get("name") == "template_engine_type":
+        if (
+            isinstance(decl, dict)
+            and decl.get("name") == "template_engine_type"
+        ):
             candidates.append(decl.get("default"))
             schema = decl.get("schema")
             if isinstance(schema, dict):
@@ -369,16 +384,16 @@ def render_agent_instruction(
     substitute_variables: bool = True,
     substitute_single_brace: bool | None = None,
 ) -> str:
-    """Loads and renders `global_instruction.txt` + `instruction.txt` for an agent."""
+    """Loads and renders `global_instruction.txt` + `instruction.txt` for an
+    agent.
+    """
     eff_state = state if state is not None else {}
-    ag_dir, ap_dir, ag_cfg, ap_cfg, def_mod, def_chan, _ = (
-        coerce_runner_inputs(
-            runner,
-            agent_dir=agent_dir,
-            app_dir=app_dir,
-            agent_config=agent_config,
-            app_config=app_config,
-        )
+    ag_dir, ap_dir, ag_cfg, ap_cfg, def_mod, def_chan, _ = coerce_runner_inputs(
+        runner,
+        agent_dir=agent_dir,
+        app_dir=app_dir,
+        agent_config=agent_config,
+        app_config=app_config,
     )
 
     raw_global = ap_cfg.get("globalInstruction") or ap_cfg.get(
@@ -509,7 +524,9 @@ def render_agent_instruction(
 
 
 def _translate_ces_tags_for_scope(instruction: str) -> str:
-    """Translates modality/channel/tool/agent tags prior to extracting in-scope params."""
+    """Translates modality/channel/tool/agent tags prior to extracting in-scope
+    params.
+    """
     text = instruction
 
     def _mod_to_static(m: re.Match[str]) -> str:
@@ -555,10 +572,12 @@ def extract_in_scope_params(
     instruction: str,
     template_engine: Literal["variables_only", "full"] = "variables_only",
 ) -> set[str]:
-    """Extracts root dynamic variable names (`{var}`) referenced in `instruction`.
+    """Extracts root dynamic variable names (`{var}`) referenced in
+    `instruction`.
 
     Excludes static `{{var}}` and `{{% ... %}}` ranges. In `"full"` mode, also
-    extracts variables referenced inside dynamic `{% ... %}` control-flow blocks.
+    extracts variables referenced inside dynamic `{% ... %}` control-flow
+    blocks.
     """
     if not instruction:
         return set()
@@ -610,11 +629,10 @@ def extract_in_scope_params(
                 continue
             else:
                 expr_part = tag_body
-            # Strip quoted string literals, filter names (`| filter`), and `is [not] test`
+            # Strip quoted string literals, filter names (`| filter`), and `is
+            # [not] test`
             expr_clean = re.sub(r"'[^']*'|\"[^\"]*\"", " ", expr_part)
-            expr_clean = re.sub(
-                r"\|\s*[a-zA-Z_][a-zA-Z0-9_]*", " ", expr_clean
-            )
+            expr_clean = re.sub(r"\|\s*[a-zA-Z_][a-zA-Z0-9_]*", " ", expr_clean)
             expr_clean = re.sub(
                 r"\bis\s+(?:not\s+)?[a-zA-Z_][a-zA-Z0-9_]*", " ", expr_clean
             )
@@ -645,7 +663,9 @@ def get_agent_in_scope_params(
     app_config: dict[str, Any] | None = None,
     template_engine: Literal["variables_only", "full"] | None = None,
 ) -> set[str]:
-    """Loads `global_instruction.txt` + `instruction.txt` and extracts `in_scope_params`."""
+    """Loads `global_instruction.txt` + `instruction.txt` and extracts
+    `in_scope_params`.
+    """
     eff_state = state if state is not None else {}
     ag_dir, ap_dir, ag_cfg, ap_cfg, _, _, _ = coerce_runner_inputs(
         runner,
@@ -687,7 +707,9 @@ def get_agent_in_scope_params(
 
 
 def sanitize_state_map(state_map: dict[str, Any] | None) -> dict[str, str]:
-    """Filters undeclared/internal state keys and formats values (`REMOVED` -> `'null'`)."""
+    """Filters undeclared/internal state keys and formats values (`REMOVED` ->
+    `'null'`).
+    """
     if not state_map:
         return {}
     sanitized: dict[str, str] = {}
@@ -700,9 +722,7 @@ def sanitize_state_map(state_map: dict[str, Any] | None) -> dict[str, str]:
             or any(key.startswith(pref) for pref in _EXCLUDED_STATE_PREFIXES)
         ):
             continue
-        if val is None or (
-            isinstance(val, str) and val in _REMOVED_SENTINELS
-        ):
+        if val is None or (isinstance(val, str) and val in _REMOVED_SENTINELS):
             sanitized[key] = "null"
         else:
             sanitized[key] = _format_template_value(val)
@@ -713,7 +733,9 @@ def compute_state_delta(
     before_state: dict[str, Any] | None,
     after_state: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Computes the per-stage `actions.state_delta` between `before_state` and `after_state`."""
+    """Computes the per-stage `actions.state_delta` between `before_state` and
+    `after_state`.
+    """
     prev = before_state or {}
     curr = after_state or {}
     delta: dict[str, Any] = {}
@@ -726,7 +748,9 @@ def compute_state_delta(
     return delta
 
 
-def _build_state_update_content(pending_state_updates: dict[str, str]) -> Content:
+def _build_state_update_content(
+    pending_state_updates: dict[str, str],
+) -> Content:
     parts: list[Part] = [Part.from_text("<state_update>")]
     for key, value in pending_state_updates.items():
         parts.append(Part.from_text(f"{key}: {value}"))
@@ -740,26 +764,27 @@ def build_contents_with_state_updates(
     *,
     mode: StateUpdateMode = "rearrange",
 ) -> list[Content]:
-    """Constructs `LlmRequest.contents` from `events` with `<state_update>` injection.
+    """Constructs `LlmRequest.contents` from `events` with `<state_update>`
+    injection.
 
     Modes:
     - `"rearrange"` (default): Reverses `events`, deduplicating in-scope state
-      updates per user turn (keeping the latest value) and inserting `<state_update>`
+      updates per user turn (keeping the latest value) and inserting
+      `<state_update>`
       blocks right before each user turn (`author == 'user'`).
     - `"in_place"`: Appends `<state_update>` immediately after each event whose
       `actions.state_delta` modifies an in-scope variable.
     - `"current_state"`: Accumulates the latest values of all in-scope variables
       across `events` and inserts a single `<current_state>` user content block
       immediately before the last user event (`author == 'user'`).
-    - `"none"`: Returns `[ev.content for ev in events if ev.content is not None]`
+    - `"none"`: Returns `[ev.content for ev in events if ev.content is not
+      None]`
       without injecting state updates.
     """
     scope_set = set(in_scope_params or ())
     if mode == "none" or not scope_set:
         return [
-            copy.deepcopy(ev.content)
-            for ev in events
-            if ev.content is not None
+            copy.deepcopy(ev.content) for ev in events if ev.content is not None
         ]
 
     if mode == "in_place":
@@ -768,9 +793,7 @@ def build_contents_with_state_updates(
             if event.content is not None:
                 result_in_place.append(copy.deepcopy(event.content))
             raw_delta = (
-                event.actions.state_delta
-                if event.actions is not None
-                else None
+                event.actions.state_delta if event.actions is not None else None
             )
             in_scope_delta = {
                 k: v
@@ -787,9 +810,7 @@ def build_contents_with_state_updates(
         latest_state: dict[str, str] = {}
         for event in events:
             raw_delta = (
-                event.actions.state_delta
-                if event.actions is not None
-                else None
+                event.actions.state_delta if event.actions is not None else None
             )
             in_scope_delta = {
                 k: v
@@ -862,8 +883,12 @@ def build_contents_with_state_updates(
     return result_rearrange
 
 
-def _parse_google_docstring_args(docstring: str | None) -> tuple[str, dict[str, str]]:
-    """Extracts the summary description and per-argument descriptions from a docstring."""
+def _parse_google_docstring_args(
+    docstring: str | None,
+) -> tuple[str, dict[str, str]]:
+    """Extracts the summary description and per-argument descriptions from a
+    docstring.
+    """
     if not docstring:
         return "", {}
     lines = inspect.cleandoc(docstring).splitlines()
@@ -907,7 +932,8 @@ def _parse_google_docstring_args(docstring: str | None) -> tuple[str, dict[str, 
         if not stripped:
             continue
 
-        # Match `param_name (optional type): description` or `param_name: description`
+        # Match `param_name (optional type): description` or `param_name:
+        # description`
         arg_match = re.match(
             r"^([a-zA-Z_][a-zA-Z0-9_]*)\s*(?:\([^)]*\))?\s*:\s*(.*)$",
             stripped,
@@ -932,7 +958,9 @@ def _flatten_bit_or(node: ast.AST) -> list[ast.AST]:
 
 
 def _annotation_to_schema(node: ast.AST | None) -> tuple[dict[str, Any], bool]:
-    """Converts a Python AST type annotation into `(json_schema_dict, is_optional)`."""
+    """Converts a Python AST type annotation into `(json_schema_dict,
+    is_optional)`.
+    """
     if node is None:
         return {"type": "STRING"}, False
 
@@ -1033,7 +1061,9 @@ def _annotation_to_schema(node: ast.AST | None) -> tuple[dict[str, Any], bool]:
 def _extract_python_tool_schema(
     code_path: Path, target_func_name: str = "run"
 ) -> tuple[str, dict[str, Any] | None]:
-    """Parses `code_path` via AST to extract `(docstring_summary, parameters_schema)`."""
+    """Parses `code_path` via AST to extract `(docstring_summary,
+    parameters_schema)`.
+    """
     if not code_path.is_file():
         return "", None
     try:
@@ -1080,7 +1110,7 @@ def _extract_python_tool_schema(
         if arg.arg in skipped_names:
             continue
         prop_schema, is_optional = _annotation_to_schema(arg.annotation)
-        if arg.arg in arg_descs and arg_descs[arg.arg]:
+        if arg_descs.get(arg.arg):
             prop_schema["description"] = arg_descs[arg.arg]
         properties[arg.arg] = prop_schema
 
@@ -1088,11 +1118,13 @@ def _extract_python_tool_schema(
         if not has_default and not is_optional:
             required.append(arg.arg)
 
-    for kw_arg, kw_def in zip(fn_node.args.kwonlyargs, fn_node.args.kw_defaults):
+    for kw_arg, kw_def in zip(
+        fn_node.args.kwonlyargs, fn_node.args.kw_defaults, strict=False
+    ):
         if kw_arg.arg in skipped_names:
             continue
         prop_schema, is_optional = _annotation_to_schema(kw_arg.annotation)
-        if kw_arg.arg in arg_descs and arg_descs[kw_arg.arg]:
+        if arg_descs.get(kw_arg.arg):
             prop_schema["description"] = arg_descs[kw_arg.arg]
         properties[kw_arg.arg] = prop_schema
         if kw_def is None and not is_optional:
@@ -1128,9 +1160,7 @@ def _resolve_tool_files(
                 pass
 
     py_fn = (
-        tool_cfg.get("pythonFunction")
-        or tool_cfg.get("python_function")
-        or {}
+        tool_cfg.get("pythonFunction") or tool_cfg.get("python_function") or {}
     )
     fn_name = str(py_fn.get("name") or tool_cfg.get("name") or tool_name)
 
@@ -1162,7 +1192,9 @@ def build_agent_tool_declarations(
     app_config: dict[str, Any] | None = None,
     include_end_session: bool | None = None,
 ) -> list[FunctionDeclaration]:
-    """Builds `FunctionDeclaration` schemas for an agent's tools and `childAgents`."""
+    """Builds `FunctionDeclaration` schemas for an agent's tools and
+    `childAgents`.
+    """
     eff_ag_dir, eff_app_dir, eff_agent_cfg, _, _, _, _ = coerce_runner_inputs(
         runner,
         agent_dir=agent_dir,
@@ -1343,7 +1375,9 @@ def build_agent_tool_declarations(
         declarations.append(
             FunctionDeclaration(
                 name="transfer_to_agent",
-                description="Transfers the conversation to a specialized child agent.",
+                description=(
+                    "Transfers the conversation to a specialized child agent."
+                ),
                 parameters={
                     "type": "OBJECT",
                     "properties": {
@@ -1385,7 +1419,8 @@ def build_agent_tool_declarations(
                         "session_escalated": {
                             "type": "BOOLEAN",
                             "description": (
-                                "Whether the session was escalated to a human agent."
+                                "Whether the session was escalated to a human "
+                                "agent."
                             ),
                         },
                     },
@@ -1412,7 +1447,9 @@ def _camel_to_snake_alias(name: str) -> str:
 
 
 def _wrap_local_python_tool_return(result: Any) -> Any:
-    """Wrap local Python tool return values into `MockExternalResponse` / `ExternalResponse`."""
+    """Wrap local Python tool return values into `MockExternalResponse` /
+    `ExternalResponse`.
+    """
     if isinstance(result, (ExternalResponse, MockExternalResponse)):
         return result
     if isinstance(result, dict):
@@ -1421,7 +1458,9 @@ def _wrap_local_python_tool_return(result: Any) -> Any:
 
 
 class _ToolFunctionResolutionError(ValueError):
-    """Raised when a local Python tool's target function cannot be unambiguously resolved."""
+    """Raised when a local Python tool's target function cannot be unambiguously
+    resolved.
+    """
 
 
 def _compile_local_tool_wrapper(
@@ -1432,7 +1471,9 @@ def _compile_local_tool_wrapper(
     *,
     mock_tools: dict[str, Any] | None = None,
 ) -> Callable[..., Any] | None:
-    """Compiles `code_path` and returns a callable injecting `context` & `tools` globals."""
+    """Compiles `code_path` and returns a callable injecting `context` & `tools`
+    globals.
+    """
     try:
         source = code_path.read_text(encoding="utf-8")
         compiled = compile(source, str(code_path), "exec")
@@ -1450,8 +1491,10 @@ def _compile_local_tool_wrapper(
             pub_fn_names = [n for n in top_fn_names if not n.startswith("_")]
             if len(pub_fn_names) > 1:
                 raise _ToolFunctionResolutionError(
-                    f"Function '{fn_name}' not found in tool file '{code_path}', "
-                    f"and multiple public candidate functions exist: {pub_fn_names}."
+                    f"Function '{fn_name}' not found in tool file "
+                    f"'{code_path}', "
+                    "and multiple public candidate functions exist: "
+                    f"{pub_fn_names}."
                 )
     except _ToolFunctionResolutionError:
         raise
@@ -1471,11 +1514,7 @@ def _compile_local_tool_wrapper(
             call_kwargs = copy.deepcopy(args[0])
             active_ctx = args[1]
             pos_args: tuple[Any, ...] = ()
-        elif (
-            len(args) == 1
-            and isinstance(args[0], dict)
-            and not kwargs
-        ):
+        elif len(args) == 1 and isinstance(args[0], dict) and not kwargs:
             call_kwargs = copy.deepcopy(args[0])
             pos_args = ()
         else:
@@ -1502,7 +1541,8 @@ def _compile_local_tool_wrapper(
         tool_log: list[dict[str, Any]] = (
             active_log if active_log is not None else []
         )
-        # Precedence: runner.mock_tools (env < local-py < ctor user mocks) < call-level mock_tools
+        # Precedence: runner.mock_tools (env < local-py < ctor user mocks) <
+        # call-level mock_tools
         mock_map: dict[str, Any] = {
             **(
                 runner.mock_tools
@@ -1544,8 +1584,10 @@ def _compile_local_tool_wrapper(
             elif len(candidate_fns) > 1:
                 cand_names = [fn.__name__ for fn in candidate_fns]
                 raise _ToolFunctionResolutionError(
-                    f"Function '{fn_name}' not found in tool file '{code_path}', "
-                    f"and multiple public candidate functions exist: {cand_names}."
+                    f"Function '{fn_name}' not found in tool file "
+                    f"'{code_path}', "
+                    "and multiple public candidate functions exist: "
+                    f"{cand_names}."
                 )
         if not callable(target_fn):
             raise _ToolFunctionResolutionError(
@@ -1554,9 +1596,7 @@ def _compile_local_tool_wrapper(
 
         sig = inspect.signature(target_fn)
         params = list(sig.parameters.values())
-        has_varkw = any(
-            p.kind == inspect.Parameter.VAR_KEYWORD for p in params
-        )
+        has_varkw = any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params)
         pos_params = [
             p
             for p in params
@@ -1599,7 +1639,7 @@ def _compile_local_tool_wrapper(
         return _wrap_local_python_tool_return(result)
 
     _wrapped_tool.__name__ = tool_name
-    setattr(_wrapped_tool, "_cxas_tool_source", "local-python")
+    _wrapped_tool._cxas_tool_source = "local-python"  # type: ignore[attr-defined]
     return _wrapped_tool
 
 
@@ -1620,9 +1660,8 @@ def load_local_python_tools(
         agent_config=agent_config,
         app_config=app_config,
     )
-    if ap_dir is None and ag_dir is not None:
-        if ag_dir.parent.name == "agents":
-            ap_dir = ag_dir.parent.parent
+    if ap_dir is None and ag_dir is not None and ag_dir.parent.name == "agents":
+        ap_dir = ag_dir.parent.parent
     if ap_dir is None:
         return {}
 
@@ -1684,7 +1723,9 @@ def load_agent_from_app_dir(
     mock_tools: dict[str, Any] | None = None,
     env_tools: Mapping[str, Callable[..., Any]] | None = None,
 ) -> HydratedAgentConfig:
-    """Hydrate agent configuration, environment tools, and local Python tools from `app_dir`."""
+    """Hydrate agent configuration, environment tools, and local Python tools
+    from `app_dir`.
+    """
     ap_path = Path(app_dir).resolve()
     app_cfg: dict[str, Any] = {}
     app_json = ap_path / "app.json"
@@ -1727,4 +1768,3 @@ def load_agent_from_app_dir(
         local_python_tools=local_py_tools,
         env_tools=env_tools_map,
     )
-

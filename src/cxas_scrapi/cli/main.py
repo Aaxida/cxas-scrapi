@@ -746,9 +746,7 @@ def test_callbacks(args: argparse.Namespace) -> None:
             sys.exit(2)
 
         if lint_only or compare_modes_flag:
-            active_mode_flag = (
-                "--lint-only" if lint_only else "--compare-modes"
-            )
+            active_mode_flag = "--lint-only" if lint_only else "--compare-modes"
             incompatible: list[str] = []
             if chain_only:
                 incompatible.append("--chain-only")
@@ -866,9 +864,7 @@ def test_callbacks(args: argparse.Namespace) -> None:
 
         # Check overall status against --fail-on (default: FAILED, ERROR, RISK)
         failed_count = sum(
-            1
-            for r in results["status"]
-            if str(r).upper() in fail_on_statuses
+            1 for r in results["status"] if str(r).upper() in fail_on_statuses
         )
 
         if failed_count > 0:

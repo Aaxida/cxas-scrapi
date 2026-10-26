@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Dual-mode (`per_callback` vs `combined`) comparison for CallbackChainRunner."""
+"""Dual-mode (`per_callback` vs `combined`) comparison for callback chains."""
 
 from __future__ import annotations
 
@@ -32,16 +32,16 @@ from cxas_scrapi.evals.callback_chain.traces import (
     ImageVersion,
     ModeDiffReport,
 )
-from cxas_scrapi.utils.callback_libs import (
-    CallbackContext,
-    LlmRequest,
-    LlmResponse,
-    Tool,
-    ToolContext,
-)
 
 if TYPE_CHECKING:
     from cxas_scrapi.evals.callback_chain.runner import CallbackChainRunner
+    from cxas_scrapi.utils.callback_libs import (
+        CallbackContext,
+        LlmRequest,
+        LlmResponse,
+        Tool,
+        ToolContext,
+    )
 
 _ACTIVE_MODE_DIFF_COLLECTOR: contextvars.ContextVar[
     list[ModeDiffReport] | None
@@ -53,7 +53,7 @@ _MODE_DIFF_COLLECTOR_LOCK = threading.Lock()
 def _push_active_mode_diff_collector(
     collector: list[ModeDiffReport],
 ) -> contextvars.Token[list[ModeDiffReport] | None]:
-    """Registers an active ModeDiffReport collector in ContextVar and thread-fallback stack."""
+    """Registers an active ModeDiffReport collector in ContextVar and stack."""
     with _MODE_DIFF_COLLECTOR_LOCK:
         _FALLBACK_MODE_DIFF_COLLECTOR_STACK.append(collector)
     return _ACTIVE_MODE_DIFF_COLLECTOR.set(collector)
@@ -63,7 +63,7 @@ def _pop_active_mode_diff_collector(
     token: contextvars.Token[list[ModeDiffReport] | None] | None,
     collector: list[ModeDiffReport] | None = None,
 ) -> None:
-    """Restores the previous ModeDiffReport collector in ContextVar and thread-fallback stack."""
+    """Restores the previous ModeDiffReport collector in ContextVar & stack."""
     if token is not None:
         _ACTIVE_MODE_DIFF_COLLECTOR.reset(token)
     else:
@@ -81,7 +81,7 @@ def _pop_active_mode_diff_collector(
 
 
 def _notify_active_mode_diff_collectors(report: ModeDiffReport) -> None:
-    """Appends `report` to the active ContextVar or thread-fallback collector."""
+    """Appends `report` to the active ContextVar or fallback collector."""
     collector = _ACTIVE_MODE_DIFF_COLLECTOR.get()
     if collector is None:
         with _MODE_DIFF_COLLECTOR_LOCK:
@@ -110,11 +110,11 @@ def execute_compare_modes(
     mock_tools: dict[str, Any] | None = None,
     consecutive_fallback_count: int | None = None,
 ) -> ModeDiffReport:
-    """Runs `stage` under both `per_callback` and `combined` modes and diffs results.
+    """Runs `stage` under `per_callback` and `combined` modes and diffs results.
 
-    Preserves exact `per_callback_trace.final_state` and `combined_trace.final_state`
-    without mutating them in-place, storing canonicalized states in
-    `report.normalized_states`.
+    Preserves exact `per_callback_trace.final_state` and
+    `combined_trace.final_state` without mutating them in-place, storing
+    canonicalized states in `report.normalized_states`.
     """
     norm_stage = normalize_stage(stage)
     eff_image_version: ImageVersion = (
@@ -201,7 +201,7 @@ def execute_compare_modes(
     finally:
         runner._suppress_fixture_recording = prev_suppress
 
-    # Update caller ctx with per_callback final state and session initialized marker
+    # Update caller ctx with per_callback final state & session initialized flag
     ctx.state = copy.deepcopy(per_trace.final_state)
     if getattr(ctx_per, "_ces_session_initialized", False):
         ctx._ces_session_initialized = True
@@ -215,9 +215,7 @@ def execute_compare_modes(
     )
 
     state_diffs: dict[str, dict[str, Any]] = {}
-    all_keys = sorted(
-        set(norm_per_state.keys()) | set(norm_comb_state.keys())
-    )
+    all_keys = sorted(set(norm_per_state.keys()) | set(norm_comb_state.keys()))
     for k in all_keys:
         in_per = k in norm_per_state
         in_comb = k in norm_comb_state

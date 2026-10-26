@@ -43,6 +43,7 @@ from cxas_scrapi.utils.callback_libs import (
     orjson,
 )
 
+
 def _find_testdata_dir() -> Path:
     cur = Path(__file__).resolve().parent
     for root in (cur, *cur.parents):
@@ -66,7 +67,7 @@ def _hermetic_search_paths(monkeypatch: pytest.MonkeyPatch) -> None:
 # ==============================================================================
 
 
-def test_budget_agent_before_agent_mode_aliasing_hazard():
+def test_budget_agent_before_agent_mode_aliasing_hazard() -> None:
     """Verifies budget_agent before_agent reference-sharing divergence between modes."""
     runner = CallbackChainRunner.from_agent_dir(
         "cxas_app/finance_app/agents/budget_agent"
@@ -119,7 +120,7 @@ def test_budget_agent_before_agent_mode_aliasing_hazard():
     assert not any("product_id" in a for a in comb)
 
 
-def test_freeze_card_agent_short_circuit_skips_text_sanitization():
+def test_freeze_card_agent_short_circuit_skips_text_sanitization() -> None:
     """Verifies freeze_card_agent short-circuit in callback 01 skips callback 02."""
     runner = CallbackChainRunner.from_agent_dir(
         "card_support_app/agents/freeze_card_agent"
@@ -148,7 +149,7 @@ def test_freeze_card_agent_short_circuit_skips_text_sanitization():
     assert [p.text for p in final_resp.content.parts if p.text]
 
 
-def test_telecom_routing_agent_before_model_chain_and_mock_tools():
+def test_telecom_routing_agent_before_model_chain_and_mock_tools() -> None:
     """Verifies routing_agent dual callback chain (01 -> 02) and mock_tools injection."""
     runner = CallbackChainRunner.from_agent_dir(
         "telecom_app/agents/routing_agent",
@@ -179,12 +180,10 @@ def test_telecom_routing_agent_before_model_chain_and_mock_tools():
     ]
     assert diff.combined_trace.final_state["user_disconnect"] is True
     assert diff.combined_trace.final_state["call_dropped_by"] == "far_end"
-    assert (
-        diff.combined_trace.tool_calls[0]["tool"] == "complete_wrapup_tool"
-    )
+    assert diff.combined_trace.tool_calls[0]["tool"] == "complete_wrapup_tool"
 
 
-def test_budget_agent_after_model_with_mock_tools_and_disabled_skip():
+def test_budget_agent_after_model_with_mock_tools_and_disabled_skip() -> None:
     """Verifies budget_agent after_model skips disabled callback 03 and runs mock_tools."""
     runner = CallbackChainRunner.from_agent_dir(
         "cxas_app/finance_app/agents/budget_agent",
@@ -228,7 +227,7 @@ def test_budget_agent_after_model_with_mock_tools_and_disabled_skip():
 
 def test_global_before_model_and_after_model_execution_order_and_disabled_skip(
     tmp_path: Path, caplog: pytest.LogCaptureFixture
-):
+) -> None:
     """Verifies app-level global callbacks run before agent callbacks and skip disabled ones."""
     app_dir = tmp_path / "my_app"
     agent_dir = app_dir / "agents" / "sub_agent"
@@ -330,7 +329,9 @@ def test_global_before_model_and_after_model_execution_order_and_disabled_skip(
             channel="GOOGLE_TELEPHONY_PLATFORM",
             session_metadata={"ivr_id": "99"},
         )
-    assert any("globalBeforeAgentCallbacks" in r.message for r in caplog.records)
+    assert any(
+        "globalBeforeAgentCallbacks" in r.message for r in caplog.records
+    )
 
     ctx = CallbackContext(state={"user_key": "val"})
     resp, trace = runner.run_before_model(ctx)
@@ -344,7 +345,9 @@ def test_global_before_model_and_after_model_execution_order_and_disabled_skip(
     assert ctx.state["with_int_default"] == 3.0
     assert "with_null_default" not in ctx.state
     assert "without_default" not in ctx.state
-    assert re.match(r"^\d{4}-\d{2}-\d{2}\[Europe/Berlin\]$", ctx.state["current_date"])
+    assert re.match(
+        r"^\d{4}-\d{2}-\d{2}\[Europe/Berlin\]$", ctx.state["current_date"]
+    )
     assert ctx.state["_session"] == {
         "modality": "VOICE",
         "channel": "GOOGLE_TELEPHONY_PLATFORM",
@@ -380,7 +383,7 @@ def test_global_before_model_and_after_model_execution_order_and_disabled_skip(
 
 
 @pytest.mark.parametrize("mode", ["per_callback", "combined"])
-def test_before_agent_short_circuit_parity(mode: str):
+def test_before_agent_short_circuit_parity(mode: str) -> None:
     """Verifies before_agent execution and short-circuit parity across modes."""
     cb1 = (
         "def before_agent_callback(callback_context: CallbackContext) -> Optional[Content]:\n"
@@ -427,7 +430,7 @@ def test_before_agent_short_circuit_parity(mode: str):
 @pytest.mark.parametrize("mode", ["per_callback", "combined"])
 def test_before_model_short_circuit_and_request_mutation_parity(
     mode: str,
-):
+) -> None:
     """Verifies before_model request mutations and short-circuit parity across modes."""
     cb1 = (
         "def before_model_callback(callback_context, llm_request):\n"
@@ -485,7 +488,7 @@ def test_before_model_short_circuit_and_request_mutation_parity(
 
 
 @pytest.mark.parametrize("mode", ["per_callback", "combined"])
-def test_after_model_short_circuit_parity(mode: str):
+def test_after_model_short_circuit_parity(mode: str) -> None:
     """Verifies after_model chaining, short-circuit, override_response, and effective_response."""
     cb1 = (
         "def after_model_callback(callback_context, llm_response):\n"
@@ -523,7 +526,7 @@ def test_after_model_short_circuit_parity(mode: str):
 @pytest.mark.parametrize("mode", ["per_callback", "combined"])
 def test_before_tool_short_circuit_and_input_mutation_parity(
     mode: str,
-):
+) -> None:
     """Verifies before_tool preserves in-place input mutations when short-circuiting."""
     cb1 = (
         "def before_tool_callback(tool, input, callback_context):\n"
@@ -567,7 +570,7 @@ def test_before_tool_short_circuit_and_input_mutation_parity(
 # ==============================================================================
 
 
-def test_state_key_deletion_and_none_removal_semantics():
+def test_state_key_deletion_and_none_removal_semantics() -> None:
     """Verifies CES runtime state key deletion and None assignment removal semantics."""
     cb1 = (
         "def before_agent_callback(callback_context):\n"
@@ -589,7 +592,7 @@ def test_state_key_deletion_and_none_removal_semantics():
     assert ctx.state["kept"] == {"nested": [1.0, 2.0]}
 
 
-def test_compare_modes_eliminates_tuple_vs_list_false_positives():
+def test_compare_modes_eliminates_tuple_vs_list_false_positives() -> None:
     """Verifies compare_modes normalizes end-of-chain JSON so tuple vs list is not flagged."""
     cb1 = (
         "def before_agent_callback(callback_context):\n"
@@ -616,7 +619,7 @@ def test_compare_modes_eliminates_tuple_vs_list_false_positives():
 # ==============================================================================
 
 
-def test_before_model_3_field_extraction_and_tool_filtering():
+def test_before_model_3_field_extraction_and_tool_filtering() -> None:
     """Verifies before_model returning None extracts system_instruction and excluded_tools."""
     cb1 = (
         "def before_model_callback(callback_context, llm_request):\n"
@@ -648,9 +651,7 @@ def test_before_model_3_field_extraction_and_tool_filtering():
     def _make_req() -> LlmRequest:
         return LlmRequest(
             model="gemini-2.5-flash",
-            contents=[
-                Content(role="user", parts=[Part.from_text("original")])
-            ],
+            contents=[Content(role="user", parts=[Part.from_text("original")])],
             config=GenerateContentConfig(
                 system_instruction=Content(
                     role="system", parts=[Part.from_text("old sys")]
@@ -694,8 +695,13 @@ def test_before_model_3_field_extraction_and_tool_filtering():
         allow_content_update=False,
     )
     assert diff_content_false.has_state_diff
-    assert diff_content_false.per_callback_trace.final_state["seen_contents_len"] == 1
-    assert diff_content_false.combined_trace.final_state["seen_contents_len"] == 2
+    assert (
+        diff_content_false.per_callback_trace.final_state["seen_contents_len"]
+        == 1
+    )
+    assert (
+        diff_content_false.combined_trace.final_state["seen_contents_len"] == 2
+    )
 
     diff_content_true = runner.compare_modes(
         CallbackContext(),
@@ -703,11 +709,16 @@ def test_before_model_3_field_extraction_and_tool_filtering():
         llm_request=_make_req(),
         allow_content_update=True,
     )
-    assert diff_content_true.per_callback_trace.final_state["seen_contents_len"] == 2
-    assert diff_content_true.combined_trace.final_state["seen_contents_len"] == 2
+    assert (
+        diff_content_true.per_callback_trace.final_state["seen_contents_len"]
+        == 2
+    )
+    assert (
+        diff_content_true.combined_trace.final_state["seen_contents_len"] == 2
+    )
 
 
-def test_after_model_in_place_mutation_discarded_when_returning_none():
+def test_after_model_in_place_mutation_discarded_when_returning_none() -> None:
     """Verifies in-place after_model edits with return None are discarded in per_callback."""
     cb1 = (
         "def after_model_callback(callback_context, llm_response):\n"
@@ -726,7 +737,9 @@ def test_after_model_in_place_mutation_discarded_when_returning_none():
     ctx = CallbackContext()
     orig_resp = LlmResponse.from_parts([Part.from_text("original_text")])
 
-    diff = runner.compare_modes(ctx, stage="after_model", llm_response=orig_resp)
+    diff = runner.compare_modes(
+        ctx, stage="after_model", llm_response=orig_resp
+    )
 
     assert diff.has_state_diff
     assert (
@@ -748,7 +761,7 @@ def test_after_model_in_place_mutation_discarded_when_returning_none():
     )
 
 
-def test_before_tool_and_after_tool_chains():
+def test_before_tool_and_after_tool_chains() -> None:
     """Verifies before_tool in-place input propagation and after_tool chain execution."""
     bt1 = (
         "def before_tool_callback(tool, input, tool_context):\n"
@@ -804,7 +817,9 @@ def test_before_tool_and_after_tool_chains():
 # ==============================================================================
 
 
-def test_llm_response_normalization_reorders_function_calls_and_strips_turn_complete():
+def test_llm_response_normalization_reorders_function_calls_and_strips_turn_complete() -> (
+    None
+):
     """Verifies LlmResponse normalization strips turn_complete and moves function_call to end."""
     cb = (
         "def after_model_callback(callback_context, llm_response):\n"
@@ -837,7 +852,9 @@ def test_llm_response_normalization_reorders_function_calls_and_strips_turn_comp
     assert [p.function_call.name for p in parts[2:]] == ["fn_1", "fn_2"]
 
 
-def test_before_agent_rejects_non_end_session_function_call_after_committing_state():
+def test_before_agent_rejects_non_end_session_function_call_after_committing_state() -> (
+    None
+):
     """Verifies before_agent rejects non-end_session function calls after committing state."""
     bad_cb = (
         "def before_agent_callback(callback_context):\n"
@@ -880,7 +897,9 @@ def test_before_agent_rejects_non_end_session_function_call_after_committing_sta
 # ==============================================================================
 
 
-def test_exception_in_second_callback_state_preservation_and_error_outcomes():
+def test_exception_in_second_callback_state_preservation_and_error_outcomes() -> (
+    None
+):
     """Verifies exception in callback 02 preserves callback 01 state only in per_callback."""
     cb1 = (
         "def before_model_callback(callback_context, llm_request):\n"
@@ -949,7 +968,7 @@ def test_exception_in_second_callback_state_preservation_and_error_outcomes():
     assert ctx_comb.state == {"init": "preserved"}
 
 
-def test_fallback_utils_parity_all_cases():
+def test_fallback_utils_parity_all_cases() -> None:
     """Verifies tool fallback, END_SESSION reason, force_enable, and default fallback."""
     boom_tool = "def before_tool_callback(tool, input, ctx):\n    raise RuntimeError('tool boom')\n"
     boom_model = "def before_model_callback(ctx, req):\n    raise RuntimeError('model boom')\n"
@@ -1005,7 +1024,7 @@ def test_fallback_utils_parity_all_cases():
     assert d_out.content.parts[0].text == "Sorry, something went wrong."
 
 
-def test_raise_on_error_true_propagates_exception():
+def test_raise_on_error_true_propagates_exception() -> None:
     """Verifies raise_on_error=True re-raises callback exceptions immediately."""
     cb = "def before_agent_callback(ctx):\n    raise ValueError('explicit boom')\n"
     runner = CallbackChainRunner.from_callbacks(
@@ -1022,7 +1041,7 @@ def test_raise_on_error_true_propagates_exception():
 # ==============================================================================
 
 
-def test_before_tool_internal_type_error_invoked_once():
+def test_before_tool_internal_type_error_invoked_once() -> None:
     """Verifies internal TypeError inside before_tool is not retried by kwargs fallback."""
     cb = (
         "def before_tool_callback(tool, input, tool_context):\n"
@@ -1039,7 +1058,9 @@ def test_before_tool_internal_type_error_invoked_once():
     assert "unsupported operand type(s) for +" in (trace.error or "")
 
 
-def test_before_tool_and_after_tool_empty_dict_or_non_dict_does_not_short_circuit():
+def test_before_tool_and_after_tool_empty_dict_or_non_dict_does_not_short_circuit() -> (
+    None
+):
     """Verifies tool callback return values ({} and non-dict) under v1 and v2."""
     bt1 = "def before_tool_callback(tool, input, ctx):\n    return {}\n"
     bt2 = (
@@ -1094,7 +1115,9 @@ def test_before_tool_and_after_tool_empty_dict_or_non_dict_does_not_short_circui
     assert v1_out == {"error": True}
 
 
-def test_orjson_non_str_keys_and_combined_end_of_chain_serialization_failure():
+def test_orjson_non_str_keys_and_combined_end_of_chain_serialization_failure() -> (
+    None
+):
     """Verifies v2 orjson non-str dict key failure and end_of_chain_serialization attribution."""
     cb1 = (
         "def before_agent_callback(ctx):\n"
@@ -1121,11 +1144,13 @@ def test_orjson_non_str_keys_and_combined_end_of_chain_serialization_failure():
     assert diff.combined_trace.executed_callbacks == ["cb_01", "cb_02"]
 
     # Also test NaN/Inf serialization in orjson
-    payload = orjson.loads(orjson.dumps({"nan": float("nan"), "inf": float("inf")}))
+    payload = orjson.loads(
+        orjson.dumps({"nan": float("nan"), "inf": float("inf")})
+    )
     assert payload == {"nan": None, "inf": None}
 
 
-def test_simulate_struct_numbers_mode_difference():
+def test_simulate_struct_numbers_mode_difference() -> None:
     """Verifies int becomes float via Protobuf Struct in per_callback vs int in combined."""
     cb1 = "def before_agent_callback(ctx):\n    ctx.state['count'] = 3\n"
     cb2 = (
@@ -1143,7 +1168,7 @@ def test_simulate_struct_numbers_mode_difference():
     assert diff.combined_trace.final_state["type_name"] == "int"
 
 
-def test_deleted_default_variable_not_reinjected_across_stages():
+def test_deleted_default_variable_not_reinjected_across_stages() -> None:
     """Verifies a deleted default variable is not re-injected in subsequent stages."""
     ba = "def before_agent_callback(ctx):\n    del ctx.state['temp_var']\n"
     aa = "def after_agent_callback(ctx):\n    ctx.state['reinjected'] = 'temp_var' in ctx.state\n"
@@ -1168,7 +1193,7 @@ def test_deleted_default_variable_not_reinjected_across_stages():
 @pytest.mark.parametrize("image_version", ["v1", "v2"])
 def test_image_version_v1_vs_v2_parameterized(
     image_version: str,
-):
+) -> None:
     """Verifies v1 vs v2 sandbox image behavior across state, request, and tool callbacks."""
     cb_nested_int = (
         "import datetime, uuid\n"
@@ -1233,7 +1258,10 @@ def test_image_version_v1_vs_v2_parameterized(
     )
     _, tr_native = runner_native.run_before_agent(
         CallbackContext(state={}),
-        extra_globals={"injected_color": Color.RED, "injected_point": Point(1, 2)},
+        extra_globals={
+            "injected_color": Color.RED,
+            "injected_point": Point(1, 2),
+        },
     )
     assert tr_native.error is None
     assert tr_native.final_state["color"] == "red"
@@ -1264,13 +1292,17 @@ def test_image_version_v1_vs_v2_parameterized(
         new_session=False,
         image_version=image_version,  # type: ignore[arg-type]
     )
-    _, tr_bm = runner_bm.run_before_model(CallbackContext(state={}), LlmRequest())
+    _, tr_bm = runner_bm.run_before_model(
+        CallbackContext(state={}), LlmRequest()
+    )
     if image_version == "v1":
         assert tr_bm.final_state["saw_sys_none"] is False
     else:
         assert tr_bm.final_state["saw_sys_none"] is True
 
-    bt_non_dict = "def before_tool_callback(tool, input, ctx):\n    return 'invalid'\n"
+    bt_non_dict = (
+        "def before_tool_callback(tool, input, ctx):\n    return 'invalid'\n"
+    )
     bt_after = "def before_tool_callback(tool, input, ctx):\n    ctx.state['ran_after'] = True\n"
     runner_bt = CallbackChainRunner.from_callbacks(
         {"before_tool": [("bt1", bt_non_dict), ("bt2", bt_after)]},
@@ -1299,7 +1331,9 @@ def test_image_version_v1_vs_v2_parameterized(
     assert diff_report.combined_trace.image_version == image_version
 
 
-def test_combined_mode_tool_callback_empty_dict_breaks_and_compare_modes_detects_diff():
+def test_combined_mode_tool_callback_empty_dict_breaks_and_compare_modes_detects_diff() -> (
+    None
+):
     """Verifies combined mode tool callback returning {} breaks loop and compare_modes flags it."""
     c1 = "def before_tool_callback(tool, input, callback_context):\n    return {}\n"
     c2 = (
@@ -1328,7 +1362,9 @@ def test_combined_mode_tool_callback_empty_dict_breaks_and_compare_modes_detects
     assert any("empty dict `{}`" in msg for msg in explanations)
 
 
-def test_simulate_struct_numbers_coerces_initial_state_and_tool_payloads():
+def test_simulate_struct_numbers_coerces_initial_state_and_tool_payloads() -> (
+    None
+):
     """Verifies simulate_struct_numbers=True coerces initial state and tool payloads to float."""
     b1 = "def before_agent_callback(ctx):\n    ctx.state['t1'] = type(ctx.state['n']).__name__\n"
     b2 = "def before_agent_callback(ctx):\n    ctx.state['t2'] = type(ctx.state['n']).__name__\n"
@@ -1368,7 +1404,7 @@ def test_simulate_struct_numbers_coerces_initial_state_and_tool_payloads():
     assert tr_tool.final_state["resp_type"] == "float"
 
 
-def test_strict_mode_and_raise_for_error():
+def test_strict_mode_and_raise_for_error() -> None:
     """Verifies CallbackTrace.raise_for_error(), TurnTrace.raise_for_error(), and strict=True."""
     bad_cb = "def after_model_callback(ctx, resp):\n    return {'not': 'an_llm_response'}\n"
     runner = CallbackChainRunner.from_callbacks(
@@ -1401,7 +1437,9 @@ def test_strict_mode_and_raise_for_error():
         )
 
 
-def test_synthesized_module_no_import_time_side_effects_and_supports_patch_globals():
+def test_synthesized_module_no_import_time_side_effects_and_supports_patch_globals() -> (
+    None
+):
     """Verifies _synthesize_chained_callback_module supports patch_globals and isolation."""
     cb1 = (
         "SIDE_EFFECT = 1 / 0 if False else 'cb1'\n"
@@ -1433,7 +1471,9 @@ def test_synthesized_module_no_import_time_side_effects_and_supports_patch_globa
     assert ctx.state["ext"] == "patched_value"
 
 
-def test_compare_modes_preserves_raw_trace_final_state_and_exposes_normalized_states():
+def test_compare_modes_preserves_raw_trace_final_state_and_exposes_normalized_states() -> (
+    None
+):
     """Verifies compare_modes preserves raw final_state and stores normalized_states."""
     cb = "def before_agent_callback(ctx):\n    ctx.state['num'] = 7\n"
     runner = CallbackChainRunner.from_callbacks(
@@ -1441,7 +1481,9 @@ def test_compare_modes_preserves_raw_trace_final_state_and_exposes_normalized_st
         new_session=False,
         simulate_struct_numbers=False,
     )
-    report = runner.compare_modes(CallbackContext(state={}), stage="before_agent")
+    report = runner.compare_modes(
+        CallbackContext(state={}), stage="before_agent"
+    )
     assert isinstance(report.per_callback_trace.final_state["num"], int)
     assert isinstance(report.combined_trace.final_state["num"], int)
     assert "per_callback" in report.normalized_states
@@ -1449,7 +1491,9 @@ def test_compare_modes_preserves_raw_trace_final_state_and_exposes_normalized_st
     assert report.normalized_states["per_callback"]["num"] == 7
 
 
-def test_v1_dict_return_and_synthesized_module_deleted_default_semantics():
+def test_v1_dict_return_and_synthesized_module_deleted_default_semantics() -> (
+    None
+):
     """Verifies V1 accepts LlmResponse/Content dicts and synthesized module respects deletions."""
     am_dict = (
         "def after_model_callback(ctx, resp):\n"

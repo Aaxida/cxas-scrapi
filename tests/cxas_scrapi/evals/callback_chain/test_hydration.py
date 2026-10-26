@@ -16,8 +16,12 @@
 
 from __future__ import annotations
 
+import copy
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -32,7 +36,9 @@ from cxas_scrapi.evals.callback_chain import (
     load_local_python_tools,
     render_agent_instruction,
 )
-from cxas_scrapi.evals.callback_chain.hydration import _extract_python_tool_schema
+from cxas_scrapi.evals.callback_chain.hydration import (
+    _extract_python_tool_schema,
+)
 from cxas_scrapi.utils.callback_libs import (
     CallbackContext,
     Content,
@@ -147,7 +153,9 @@ def _create_sample_app(tmp_path: Path) -> tuple[Path, Path, Path]:
     return app_dir, root_dir, sub_dir
 
 
-def test_render_agent_instruction_variables_only_default(tmp_path: Path) -> None:
+def test_render_agent_instruction_variables_only_default(
+    tmp_path: Path,
+) -> None:
     """Verifies default variables_only mode, {{var}}, single-brace preservation, and tags."""
     app_dir, root_dir, _ = _create_sample_app(tmp_path)
     runner = CallbackChainRunner.from_agent_dir(root_dir, app_dir=app_dir)
@@ -170,7 +178,10 @@ def test_render_agent_instruction_variables_only_default(tmp_path: Path) -> None
         "{{% if _session.modality == 'CHAT' %}}Chat-only banner.{{% endif %}}"
         in rendered
     )
-    assert "Use check_balance to inspect balances or route to billing_agent." in rendered
+    assert (
+        "Use check_balance to inspect balances or route to billing_agent."
+        in rendered
+    )
     assert "`check_balance`" not in rendered
     assert "{@TOOL:" not in rendered
     assert "{@AGENT:" not in rendered
@@ -274,7 +285,7 @@ def test_build_tool_declarations_and_load_local_python_tools(
 
     seen_requests = []
 
-    def fake_llm(req):
+    def fake_llm(req: Any) -> LlmResponse:
         seen_requests.append(req)
         if len(seen_requests) == 1:
             return LlmResponse.from_parts(
@@ -461,7 +472,11 @@ def test_mid_turn_state_mutation_rehydrates_instruction_on_hop_2(
 
     def fake_llm(req: LlmRequest) -> LlmResponse:
         seen_instructions.append(str(req.config.system_instruction))
-        decls = req.config.tools[0].function_declarations if req.config.tools else []
+        decls = (
+            req.config.tools[0].function_declarations
+            if req.config.tools
+            else []
+        )
         seen_tools.append([d.name for d in decls])
         if len(seen_instructions) == 1:
             return LlmResponse.from_parts(
@@ -480,7 +495,9 @@ def test_mid_turn_state_mutation_rehydrates_instruction_on_hop_2(
     )
     runner.run_turn(
         CallbackContext(state={"customer_tier": "Bronze"}),
-        llm_request=LlmRequest(config=GenerateContentConfig(tools=[custom_tool])),
+        llm_request=LlmRequest(
+            config=GenerateContentConfig(tools=[custom_tool])
+        ),
         llm=fake_llm,
         execute_tools=True,
     )
@@ -557,7 +574,9 @@ def test_app_config_template_engine_type_default_detection() -> None:
 
 def test_substitute_single_brace_override_in_variables_only_mode() -> None:
     """Verifies substitute_single_brace=True works alongside variables_only mode."""
-    raw = "Hello {name}! {@startModality_VOICE}Speak clearly.{@endModality_VOICE}"
+    raw = (
+        "Hello {name}! {@startModality_VOICE}Speak clearly.{@endModality_VOICE}"
+    )
     rendered = render_agent_instruction(
         instruction_text=raw,
         state={"name": "Bob"},
@@ -565,7 +584,10 @@ def test_substitute_single_brace_override_in_variables_only_mode() -> None:
         substitute_single_brace=True,
     )
     assert "Hello Bob!" in rendered
-    assert "{{% if _session.modality == 'VOICE' %}}Speak clearly.{{% endif %}}" in rendered
+    assert (
+        "{{% if _session.modality == 'VOICE' %}}Speak clearly.{{% endif %}}"
+        in rendered
+    )
 
 
 def test_data_store_tool_declaration_building() -> None:
@@ -713,9 +735,13 @@ def test_dynamic_variable_state_update_injection_and_modes(
     )
     # In-place inserts <state_update> immediately after the event that produced the delta
     assert in_place_contents[0].parts[0].text == "<state_update>"
-    assert "customer_tier: SILVER" in [p.text for p in in_place_contents[0].parts]
+    assert "customer_tier: SILVER" in [
+        p.text for p in in_place_contents[0].parts
+    ]
     assert in_place_contents[3].parts[0].text == "<state_update>"
-    assert "customer_tier: DIAMOND" in [p.text for p in in_place_contents[3].parts]
+    assert "customer_tier: DIAMOND" in [
+        p.text for p in in_place_contents[3].parts
+    ]
     assert "opt_var: null" in [p.text for p in in_place_contents[3].parts]
 
     current_state_contents = build_contents_with_state_updates(
@@ -752,9 +778,11 @@ def test_auto_follow_token_latency_and_max_agent_transfers_warning(
     tmp_path: Path,
 ) -> None:
     """Verifies token/latency aggregation, agent_hops, and max_agent_transfers warning."""
-    app_dir, root_dir, sub_dir = _create_sample_app(tmp_path)
+    app_dir, _root_dir, sub_dir = _create_sample_app(tmp_path)
     # Allow billing_agent to transfer back to root_agent for ping-pong test
-    sub_cfg = json.loads((sub_dir / "billing_agent.json").read_text(encoding="utf-8"))
+    sub_cfg = json.loads(
+        (sub_dir / "billing_agent.json").read_text(encoding="utf-8")
+    )
     sub_cfg["childAgents"] = ["root_agent"]
     (sub_dir / "billing_agent.json").write_text(
         json.dumps(sub_cfg), encoding="utf-8"
@@ -817,7 +845,11 @@ def test_auto_follow_token_latency_and_max_agent_transfers_warning(
         )
 
     tt_loop = sim_loop.turn("Loop transfer", llm=ping_pong_llm)
-    assert tt_loop.routed_agents == ["root_agent", "billing_agent", "root_agent"]
+    assert tt_loop.routed_agents == [
+        "root_agent",
+        "billing_agent",
+        "root_agent",
+    ]
     assert tt_loop.transfer_to == "billing_agent"
     assert sim_loop.current_agent == "billing_agent"
     assert sim_loop.is_agent_entry() is True
@@ -825,17 +857,24 @@ def test_auto_follow_token_latency_and_max_agent_transfers_warning(
 
 
 def test_cli_and_callback_evals_llm(
-    tmp_path: Path, monkeypatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Verifies CLI parser and handlers for test-callbacks --llm."""
-    import pytest
-
-    from cxas_scrapi.cli.main import get_parser, test_callbacks
-    from cxas_scrapi.evals.callback_evals import CallbackEvals
+    from cxas_scrapi.cli.main import (  # noqa: PLC0415
+        get_parser,
+        test_callbacks,
+    )
+    from cxas_scrapi.evals.callback_evals import CallbackEvals  # noqa: PLC0415
 
     parser = get_parser()
     args_tc = parser.parse_args(
-        ["test-callbacks", "--app-dir", str(tmp_path), "--llm", "gemini-2.5-flash"]
+        [
+            "test-callbacks",
+            "--app-dir",
+            str(tmp_path),
+            "--llm",
+            "gemini-2.5-flash",
+        ]
     )
     assert args_tc.llm == "gemini-2.5-flash"
 
@@ -918,7 +957,9 @@ def test_predefined_vars_deleted_defaults_and_in_place_current_state_ordering(
 
     def llm_rearrange(req: LlmRequest) -> LlmResponse:
         seen_rearrange.append(req)
-        return LlmResponse.from_parts([Part.from_text(f"Reply {len(seen_rearrange)}")])
+        return LlmResponse.from_parts(
+            [Part.from_text(f"Reply {len(seen_rearrange)}")]
+        )
 
     sim_rearrange.turn("Turn 1", llm=llm_rearrange)
     assert "brand_name" not in sim_rearrange.state
@@ -954,7 +995,9 @@ def test_predefined_vars_deleted_defaults_and_in_place_current_state_ordering(
 
     def llm_in_place(req: LlmRequest) -> LlmResponse:
         seen_in_place.append(req)
-        return LlmResponse.from_parts([Part.from_text(f"Reply {len(seen_in_place)}")])
+        return LlmResponse.from_parts(
+            [Part.from_text(f"Reply {len(seen_in_place)}")]
+        )
 
     sim_in_place.turn("Turn 1", llm=llm_in_place)
     sim_in_place.turn("Turn 2", llm=llm_in_place)
@@ -976,7 +1019,9 @@ def test_predefined_vars_deleted_defaults_and_in_place_current_state_ordering(
 
     # 3. Test multi-turn ordering in `current_state` mode
     sim_cs = SessionSimulator(
-        runner, state={"stage_marker": "init"}, state_update_mode="current_state"
+        runner,
+        state={"stage_marker": "init"},
+        state_update_mode="current_state",
     )
     seen_cs: list[LlmRequest] = []
 
@@ -1048,7 +1093,9 @@ def test_five_stage_state_delta_attribution_and_ordering_snapshot(
         d = ag / folder / "cb1"
         d.mkdir(parents=True)
         (d / "python_code.py").write_text(code, encoding="utf-8")
-        cfg[key] = [{"pythonCode": f"agents/root_agent/{folder}/cb1/python_code.py"}]
+        cfg[key] = [
+            {"pythonCode": f"agents/root_agent/{folder}/cb1/python_code.py"}
+        ]
     (ag / "root_agent.json").write_text(json.dumps(cfg), encoding="utf-8")
 
     td = app / "tools" / "lookup" / "python_function"
@@ -1072,9 +1119,9 @@ def test_five_stage_state_delta_attribution_and_ordering_snapshot(
         json.dumps({"rootAgent": "root_agent"}), encoding="utf-8"
     )
 
-    def _run_mode(mode: str) -> tuple[list[list[str]], list[tuple[str, bool, list[str]]]]:
-        import copy
-
+    def _run_mode(
+        mode: str,
+    ) -> tuple[list[list[str]], list[tuple[str, bool, list[str]]]]:
         calls: list[LlmRequest] = []
 
         def _fake_llm(req: LlmRequest) -> LlmResponse:
@@ -1116,7 +1163,11 @@ def test_five_stage_state_delta_attribution_and_ordering_snapshot(
             for call in calls
         ]
         ev_summary = [
-            (e.author, e.content is not None, sorted(e.actions.state_delta.keys()))
+            (
+                e.author,
+                e.content is not None,
+                sorted(e.actions.state_delta.keys()),
+            )
             for e in sim.events
         ]
         return flat_calls, ev_summary
@@ -1301,7 +1352,14 @@ def _format_parts(parts: list[Part]) -> list[str]:
 
 
 @pytest.mark.parametrize(
-    "scenario_name,events,exp_v1_user,exp_v1_agent,exp_v2_user,exp_v2_agent",
+    (
+        "scenario_name",
+        "events",
+        "exp_v1_user",
+        "exp_v1_agent",
+        "exp_v2_user",
+        "exp_v2_agent",
+    ),
     [
         (
             "t1_full_turn_plus_aa_none",
@@ -1441,7 +1499,9 @@ def test_session_simulator_before_model_get_last_agent_output() -> None:
         image_version="v2",
         new_session=False,
     )
-    sim_with_ba_v2 = SessionSimulator(runner_with_ba_v2, hydrate_from_agent=True)
+    sim_with_ba_v2 = SessionSimulator(
+        runner_with_ba_v2, hydrate_from_agent=True
+    )
     sim_with_ba_v2.turn(
         "t1", mock_llm=LlmResponse.from_parts([Part.from_text("answer1")])
     )
@@ -1476,7 +1536,9 @@ def test_session_simulator_before_model_get_last_agent_output() -> None:
         agent_config={"displayName": "ag", "instruction": "Count {n}"},
         new_session=False,
     )
-    sim_with_ba_v1 = SessionSimulator(runner_with_ba_v1, hydrate_from_agent=True)
+    sim_with_ba_v1 = SessionSimulator(
+        runner_with_ba_v1, hydrate_from_agent=True
+    )
     sim_with_ba_v1.turn(
         "t1", mock_llm=LlmResponse.from_parts([Part.from_text("answer1")])
     )
@@ -1628,7 +1690,6 @@ def test_local_python_tool_ambiguous_fallback_raises_value_error(
 
     with pytest.raises(
         ValueError,
-        match="multiple public candidate functions exist.*helper_alpha.*main_beta",
+        match=r"multiple public candidate functions exist.*helper_alpha.*main_beta",
     ):
         load_local_python_tools(app_dir=app_dir, agent_dir=ag_dir)
-

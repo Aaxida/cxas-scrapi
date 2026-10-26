@@ -12,11 +12,14 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Deterministic snapshot serialization and management for CES callback chain tests."""
+"""Deterministic snapshot serialization and management for CES callback chain
+tests.
+"""
 
 from __future__ import annotations
 
 import base64
+import contextlib
 import contextvars
 import copy
 import datetime
@@ -92,7 +95,9 @@ def _reset_unnamed_snapshot_counts() -> None:
 
 
 def _canonicalize_value(val: Any, *, key_name: str | None = None) -> Any:
-    """Recursively scrubs volatile fields and normalizes arbitrary Python objects for JSON."""
+    """Recursively scrubs volatile fields and normalizes arbitrary Python
+    objects for JSON.
+    """
     if key_name == "current_date":
         return _SCRUBBED_DATE_PLACEHOLDER
     if key_name == "thought_signature" and val is not None:
@@ -162,10 +167,13 @@ def _extract_system_instruction_text(req: LlmRequest | None) -> str:
 
 
 def _find_unresolved_placeholders(text: str) -> list[str]:
-    """Finds unresolved `{var}` and `{{var}}` placeholders in instruction/prompt text."""
+    """Finds unresolved `{var}` and `{{var}}` placeholders in instruction/prompt
+    text.
+    """
     if not text:
         return []
-    # Strip <state_update> and <current_state> blocks before scanning for placeholders
+    # Strip <state_update> and <current_state> blocks before scanning for
+    # placeholders
     cleaned = _STATE_UPDATE_BLOCK_RE.sub("", text)
     cleaned = _CURRENT_STATE_BLOCK_RE.sub("", cleaned)
     found: set[str] = set()
@@ -177,7 +185,9 @@ def _find_unresolved_placeholders(text: str) -> list[str]:
 
 
 def _parse_state_update_inner(raw_inner: str, merged: dict[str, Any]) -> None:
-    """Parses JSON or `key: value` lines inside a `<state_update>` / `<current_state>` block."""
+    """Parses JSON or `key: value` lines inside a `<state_update>` /
+    `<current_state>` block.
+    """
     raw_stripped = raw_inner.strip()
     if not raw_stripped:
         return
@@ -220,7 +230,8 @@ def _extract_injected_state_updates(
 
     Args:
         req: The `LlmRequest` to inspect.
-        source: `"state_update"` (default, extracts only `<state_update>` deltas),
+        source: `"state_update"` (default, extracts only `<state_update>`
+        deltas),
             `"current_state"` (extracts only `<current_state>` blocks), or
             `"any"` (merges `<current_state>` followed by `<state_update>` so
             `<state_update>` takes precedence).
@@ -229,7 +240,8 @@ def _extract_injected_state_updates(
         return {}
     if source not in ("state_update", "current_state", "any"):
         raise ValueError(
-            f"source must be 'state_update', 'current_state', or 'any'; got {source!r}."
+            "source must be 'state_update', 'current_state', or 'any'; got "
+            f"{source!r}."
         )
     merged: dict[str, Any] = {}
     text_blobs: list[str] = []
@@ -332,7 +344,9 @@ def _serialize_response_summary(
 def serialize_stage_snapshot(
     trace: CallbackTrace | tuple[Any, CallbackTrace] | ModeDiffReport,
 ) -> dict[str, Any]:
-    """Serializes a `CallbackTrace` or `ModeDiffReport` into a deterministic snapshot dict."""
+    """Serializes a `CallbackTrace` or `ModeDiffReport` into a deterministic
+    snapshot dict.
+    """
     if (
         isinstance(trace, tuple)
         and len(trace) == 2
@@ -358,7 +372,8 @@ def serialize_stage_snapshot(
 
     if not isinstance(trace, CallbackTrace):
         raise TypeError(
-            f"serialize_stage_snapshot expected CallbackTrace or ModeDiffReport, "
+            "serialize_stage_snapshot expected CallbackTrace or "
+            "ModeDiffReport, "
             f"got {type(trace).__name__}"
         )
 
@@ -413,7 +428,9 @@ def _serialize_llm_step(
     include_prompt: bool = True,
     include_full_prompt: bool = False,
 ) -> dict[str, Any]:
-    """Serializes a single `LlmStepTrace` using the hybrid prompt hash + state_update strategy."""
+    """Serializes a single `LlmStepTrace` using the hybrid prompt hash +
+    state_update strategy.
+    """
     sys_text = _extract_system_instruction_text(ls.request)
     sys_hash = (
         hashlib.sha256(sys_text.encode("utf-8")).hexdigest()[:12]
@@ -472,7 +489,9 @@ def _serialize_llm_step(
 
 
 def _serialize_tool_step(ts: ToolStepTrace, index: int) -> dict[str, Any]:
-    """Serializes a single `ToolStepTrace` with normalized deterministic call ID."""
+    """Serializes a single `ToolStepTrace` with normalized deterministic call
+    ID.
+    """
     return {
         "call_index": index,
         "tool_name": ts.tool_name,
@@ -502,10 +521,13 @@ def serialize_turn_snapshot(
     include_prompt: bool = True,
     include_full_prompt: bool = False,
 ) -> dict[str, Any]:
-    """Serializes a `TurnTrace` into a deterministic, human-readable snapshot dictionary.
+    """Serializes a `TurnTrace` into a deterministic, human-readable snapshot
+    dictionary.
 
-    Scrubs volatile timing fields (`duration_ms`, `llm_duration_ms`, `tool_duration_ms`,
-    `callback_duration_ms`), replaces `current_date` with `<SCRUBBED_CURRENT_DATE>`,
+    Scrubs volatile timing fields (`duration_ms`, `llm_duration_ms`,
+    `tool_duration_ms`,
+    `callback_duration_ms`), replaces `current_date` with
+    `<SCRUBBED_CURRENT_DATE>`,
     and replaces binary `thought_signature` values with `<THOUGHT_SIGNATURE>`.
     """
     if (
@@ -517,7 +539,8 @@ def serialize_turn_snapshot(
 
     if not isinstance(turn, TurnTrace):
         raise TypeError(
-            f"serialize_turn_snapshot expected TurnTrace or (LlmResponse, TurnTrace), "
+            "serialize_turn_snapshot expected TurnTrace or (LlmResponse, "
+            "TurnTrace), "
             f"got {type(turn).__name__}"
         )
 
@@ -639,7 +662,9 @@ def serialize_session_snapshot(
     include_prompt: bool = True,
     include_full_prompt: bool = False,
 ) -> dict[str, Any]:
-    """Serializes a multi-turn `SessionSimulator` or sequence of `TurnTrace`s into a snapshot dict."""
+    """Serializes a multi-turn `SessionSimulator` or sequence of `TurnTrace`s
+    into a snapshot dict.
+    """
     if isinstance(session, SessionSimulator):
         turns = list(session.turns)
         agent_history = list(session.agent_history)
@@ -660,7 +685,8 @@ def serialize_session_snapshot(
                 turns.append(item)
             else:
                 raise TypeError(
-                    f"serialize_session_snapshot sequence items must be TurnTrace, "
+                    "serialize_session_snapshot sequence items must be "
+                    "TurnTrace, "
                     f"got {type(item).__name__}"
                 )
         agent_history = []
@@ -674,7 +700,8 @@ def serialize_session_snapshot(
         warnings = []
     else:
         raise TypeError(
-            f"serialize_session_snapshot expected SessionSimulator or Sequence[TurnTrace], "
+            "serialize_session_snapshot expected SessionSimulator or "
+            "Sequence[TurnTrace], "
             f"got {type(session).__name__}"
         )
 
@@ -695,7 +722,9 @@ def serialize_session_snapshot(
 
 
 def _detect_caller_test_context() -> tuple[Path, str]:
-    """Walks the call stack to find the calling test file and class/function scope."""
+    """Walks the call stack to find the calling test file and class/function
+    scope.
+    """
     active_ctx = _ACTIVE_SNAPSHOT_CONTEXT.get()
     if active_ctx is not None:
         f_path = active_ctx.get("test_file")
@@ -747,7 +776,9 @@ def _compute_structured_json_diff(
     actual: Any,
     path: str = "$",
 ) -> list[str]:
-    """Computes a structured `+Added / ~Modified / -Removed` diff across JSON values."""
+    """Computes a structured `+Added / ~Modified / -Removed` diff across JSON
+    values.
+    """
     lines: list[str] = []
     if type(expected) is not type(actual):
         lines.append(f"~Modified {path}: {expected!r} -> {actual!r}")
@@ -786,7 +817,9 @@ def _compute_structured_json_diff(
 
 
 def _truncate_snapshot_preview(payload: Any, max_chars: int = 400) -> Any:
-    """Truncates large snapshot payloads for concise `Expected`/`Actual` summaries."""
+    """Truncates large snapshot payloads for concise `Expected`/`Actual`
+    summaries.
+    """
     try:
         rendered = json.dumps(payload, ensure_ascii=False, sort_keys=True)
     except Exception:
@@ -797,14 +830,17 @@ def _truncate_snapshot_preview(payload: Any, max_chars: int = 400) -> Any:
 
 
 class SnapshotManager:
-    """Manages reading, comparing, and updating `.snap.json` files for CES agent tests.
+    """Manages reading, comparing, and updating `.snap.json` files for CES agent
+    tests.
 
     Note on concurrency (`pytest-xdist`):
     Snapshot file updates use atomic temporary-file replacement (`os.replace`),
     which prevents partial/corrupt JSON writes. However, because all tests in a
-    single test module share `<module>.snap.json`, running `--cxas-update-snapshots`
+    single test module share `<module>.snap.json`, running
+    `--cxas-update-snapshots`
     across parallel `pytest-xdist` workers that split tests from the same module
-    can still race on read-modify-write; use `--dist=loadfile` (or single-worker)
+    can still race on read-modify-write; use `--dist=loadfile` (or
+    single-worker)
     when updating snapshots.
     """
 
@@ -840,16 +876,20 @@ class SnapshotManager:
                 if active_ctx is not None
                 else False
             )
-            env_ci = os.environ.get(
-                "CXAS_SNAPSHOT_CI", ""
-            ).strip().lower() in ("1", "true", "yes")
+            env_ci = os.environ.get("CXAS_SNAPSHOT_CI", "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+            )
             self.ci_mode = ctx_ci or env_ci
 
     def resolve_snapshot_path(
         self,
         test_file: str | Path | None = None,
     ) -> tuple[Path, str]:
-        """Resolves the `.snap.json` file path and default snapshot key prefix."""
+        """Resolves the `.snap.json` file path and default snapshot key
+        prefix.
+        """
         detected_file, detected_func = _detect_caller_test_context()
         eff_test_file = (
             Path(test_file).resolve()
@@ -914,7 +954,8 @@ class SnapshotManager:
         *,
         test_file: str | Path | None = None,
     ) -> tuple[bool, bool, str, Path]:
-        """Checks whether `actual_payload` matches an existing snapshot without writing to disk.
+        """Checks whether `actual_payload` matches an existing snapshot without
+        writing to disk.
 
         Returns `(exists_on_disk, matches_expected, snap_key, snap_file)`.
         """
@@ -960,12 +1001,15 @@ class SnapshotManager:
         test_file: str | Path | None = None,
         update_snapshots: bool | None = None,
     ) -> dict[str, Any]:
-        """Compares `actual_payload` against the stored snapshot or writes/updates it.
+        """Compares `actual_payload` against the stored snapshot or
+        writes/updates it.
 
-        Raises `AgentAssertionError` with a structured `+Added / ~Modified / -Removed`
-        diff and unified diff if the snapshot drifts and `update_snapshots` is False.
+        Raises `AgentAssertionError` with a structured `+Added / ~Modified /
+        -Removed`
+        diff and unified diff if the snapshot drifts and `update_snapshots` is
+        False.
         """
-        from cxas_scrapi.evals.callback_chain.matchers import (
+        from cxas_scrapi.evals.callback_chain.matchers import (  # noqa: PLC0415
             AgentAssertionError,
         )
 
@@ -996,7 +1040,8 @@ class SnapshotManager:
                     all_snapshots = loaded
             except Exception as exc:
                 raise AgentAssertionError(
-                    f"Failed to parse existing snapshot file '{snap_file}': {exc}"
+                    f"Failed to parse existing snapshot file '{snap_file}': "
+                    f"{exc}"
                 ) from exc
 
         if snap_key not in all_snapshots and name and name in all_snapshots:
@@ -1005,7 +1050,8 @@ class SnapshotManager:
         if snap_key not in all_snapshots and not eff_update and self.ci_mode:
             raise AgentAssertionError(
                 f"Snapshot '{snap_key}' is missing in '{snap_file}' "
-                "(CI mode enabled; run pytest with `--cxas-update-snapshots` to record it)."
+                "(CI mode enabled; run pytest with `--cxas-update-snapshots` "
+                "to record it)."
             )
 
         if snap_key not in all_snapshots or eff_update:
@@ -1030,10 +1076,8 @@ class SnapshotManager:
                     tmp_file.write(serialized)
                 os.replace(tmp_path, snap_file)
             except Exception:
-                try:
+                with contextlib.suppress(OSError):
                     os.unlink(tmp_path)
-                except OSError:
-                    pass
                 raise
             return canonical_actual
 
@@ -1070,12 +1114,18 @@ class SnapshotManager:
             )
             diff_text = "".join(unified_lines[:80])
             if len(unified_lines) > 80:
-                diff_text += f"... ({len(unified_lines) - 80} more unified diff lines truncated)\n"
+                diff_text += (
+                    f"... ({len(unified_lines) - 80} more unified diff lines "
+                    f"truncated)\n"
+                )
             raise AgentAssertionError(
-                f"Snapshot '{snap_key}' in '{snap_file}' did not match actual trace output.\n\n"
-                f"--- Snapshot Drift (+Added / ~Modified / -Removed) ---\n  {structured_block}\n\n"
+                f"Snapshot '{snap_key}' in '{snap_file}' did not match actual "
+                "trace output.\n\n"
+                "--- Snapshot Drift (+Added / ~Modified / -Removed) ---\n  "
+                f"{structured_block}\n\n"
                 f"--- Unified Diff ---\n{diff_text}\n"
-                f"To update snapshots, run pytest with `--cxas-update-snapshots` "
+                "To update snapshots, run pytest with "
+                "`--cxas-update-snapshots` "
                 f"(or set `CXAS_UPDATE_SNAPSHOTS=1`).",
                 expected=_truncate_snapshot_preview(expected_payload),
                 actual=_truncate_snapshot_preview(canonical_actual),
@@ -1124,7 +1174,9 @@ class SnapshotManager:
         include_full_prompt: bool = False,
         update_snapshots: bool | None = None,
     ) -> dict[str, Any]:
-        """Serializes `session` and asserts that it matches the named snapshot."""
+        """Serializes `session` and asserts that it matches the named
+        snapshot.
+        """
         payload = serialize_session_snapshot(
             session,
             include_prompt=include_prompt,

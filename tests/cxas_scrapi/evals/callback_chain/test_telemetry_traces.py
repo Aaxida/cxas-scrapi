@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -38,21 +39,15 @@ from cxas_scrapi.utils.callback_libs import (
 
 def test_duration_ms_across_all_trace_levels() -> None:
     """Verifies duration_ms is recorded (> 0) on step, stage, tool, LLM, and turn traces."""
-    ba_code = (
-        "def before_agent_callback(ctx):\n"
-        "    ctx.state['ba_ok'] = True\n"
-    )
+    ba_code = "def before_agent_callback(ctx):\n    ctx.state['ba_ok'] = True\n"
     bm_code_1 = (
-        "def before_model_callback(ctx, req):\n"
-        "    ctx.state['bm_1'] = True\n"
+        "def before_model_callback(ctx, req):\n    ctx.state['bm_1'] = True\n"
     )
     bm_code_2 = (
-        "def before_model_callback(ctx, req):\n"
-        "    ctx.state['bm_2'] = True\n"
+        "def before_model_callback(ctx, req):\n    ctx.state['bm_2'] = True\n"
     )
     am_code = (
-        "def after_model_callback(ctx, resp):\n"
-        "    ctx.state['am_ok'] = True\n"
+        "def after_model_callback(ctx, resp):\n    ctx.state['am_ok'] = True\n"
     )
     bt_code = (
         "def before_tool_callback(tool, args, ctx):\n"
@@ -62,10 +57,7 @@ def test_duration_ms_across_all_trace_levels() -> None:
         "def after_tool_callback(tool, args, ctx, resp):\n"
         "    ctx.state['at_ok'] = True\n"
     )
-    aa_code = (
-        "def after_agent_callback(ctx):\n"
-        "    ctx.state['aa_ok'] = True\n"
-    )
+    aa_code = "def after_agent_callback(ctx):\n    ctx.state['aa_ok'] = True\n"
 
     for mode in ("per_callback", "combined"):
         runner = CallbackChainRunner.from_callbacks(
@@ -83,16 +75,22 @@ def test_duration_ms_across_all_trace_levels() -> None:
 
         call_count = [0]
 
-        def slow_llm(req):
-            call_count[0] += 1
+        def slow_llm(req: Any) -> LlmResponse:
+            call_count[0] += 1  # noqa: B023
             time.sleep(0.002)
-            if call_count[0] == 1:
+            if call_count[0] == 1:  # noqa: B023
                 return LlmResponse.from_parts(
-                    [Part.from_function_call("lookup_order", {"order_id": "123"})]
+                    [
+                        Part.from_function_call(
+                            "lookup_order", {"order_id": "123"}
+                        )
+                    ]
                 )
-            return LlmResponse.from_parts([Part.from_text("Order 123 is shipped.")])
+            return LlmResponse.from_parts(
+                [Part.from_text("Order 123 is shipped.")]
+            )
 
-        def slow_tool(args):
+        def slow_tool(args: dict[str, Any]) -> dict[str, Any]:
             time.sleep(0.002)
             return {"status": "shipped", "order_id": args["order_id"]}
 
@@ -146,7 +144,9 @@ def test_duration_ms_across_all_trace_levels() -> None:
         assert tt.callback_duration_ms > 0.0
 
 
-def test_token_usage_extraction_and_preservation_across_after_model_override() -> None:
+def test_token_usage_extraction_and_preservation_across_after_model_override() -> (
+    None
+):
     """Verifies token usage on LlmStepTrace and TurnTrace even when after_model overrides."""
     am_override = (
         "def after_model_callback(ctx, resp):\n"
@@ -260,7 +260,9 @@ def test_thoughts_and_cached_tokens_aggregation_in_summary_and_report() -> None:
     assert int(df.loc[0, "cached_tokens"]) == 25
 
 
-def test_short_circuit_before_model_records_zero_llm_duration_and_tokens() -> None:
+def test_short_circuit_before_model_records_zero_llm_duration_and_tokens() -> (
+    None
+):
     """Verifies before_model short-circuit records 0 llm_duration_ms and 0 tokens."""
     bm_short = (
         "def before_model_callback(ctx, req):\n"
@@ -293,14 +295,16 @@ def test_before_tool_short_circuit_records_zero_tool_duration() -> None:
     )
     tool_ran = [False]
 
-    def never_called(args):
+    def never_called(args: dict[str, Any]) -> dict[str, Any]:
         tool_ran[0] = True
         return {"cached": False}
 
     resp, tt = runner.run_turn(
         CallbackContext(state={}),
         llm=[
-            LlmResponse.from_parts([Part.from_function_call("my_tool", {"x": 1})]),
+            LlmResponse.from_parts(
+                [Part.from_function_call("my_tool", {"x": 1})]
+            ),
             LlmResponse.from_parts([Part.from_text("Done")]),
         ],
         execute_tools=True,
@@ -381,7 +385,9 @@ def test_session_metrics_summary_and_benchmark_comparison_report() -> None:
     as_dict = report.to_dict()
     assert as_dict["baseline_label"] == "per_callback"
     assert as_dict["summaries"]["combined"]["total_tokens"] == 375
-    assert as_dict["deltas_vs_baseline"]["combined"]["total_tokens_delta"] == 120
+    assert (
+        as_dict["deltas_vs_baseline"]["combined"]["total_tokens_delta"] == 120
+    )
 
     df = report.to_dataframe()
     assert isinstance(df, pd.DataFrame)
@@ -414,7 +420,9 @@ def test_empty_turns_metrics_summary_and_comparison_report() -> None:
 
     as_dict = report.to_dict()
     assert (
-        as_dict["deltas_vs_baseline"]["other_empty"]["duration_ratio_vs_baseline"]
+        as_dict["deltas_vs_baseline"]["other_empty"][
+            "duration_ratio_vs_baseline"
+        ]
         is None
     )
     assert (
@@ -447,7 +455,9 @@ def test_empty_turns_metrics_summary_and_comparison_report() -> None:
     assert edge_report.token_savings_ratio(0) is None
     edge_md = edge_report.to_markdown_table()
     assert "inf" not in edge_md
-    assert "| zero_dur_cand | 0 | 0 | 0 | - | - | 0.0 | - | 100 | - |" in edge_md
+    assert (
+        "| zero_dur_cand | 0 | 0 | 0 | - | - | 0.0 | - | 100 | - |" in edge_md
+    )
 
 
 def test_multi_turn_models_used_and_routed_agents_in_summary() -> None:

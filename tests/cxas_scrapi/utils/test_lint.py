@@ -12,12 +12,17 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Cross-callback AST static linter (C011–C019) and `cxas lint` integration tests."""
+"""Cross-callback AST static linter (C011-C019) and `cxas lint` integration tests."""
 
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import subprocess
+import sys
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from cxas_scrapi.evals.callback_evals import CallbackChainRunner
 from cxas_scrapi.utils.callback_libs import CallbackContext
@@ -31,7 +36,7 @@ from cxas_scrapi.utils.linter import (
 )
 
 
-def test_static_linter_rules_c011_to_c018_and_runtime_diagnostics():
+def test_static_linter_rules_c011_to_c018_and_runtime_diagnostics() -> None:
     """Verifies cross-callback AST rules C011-C019 and runtime aliasing diagnostics."""
     ba1 = (
         "def before_agent_callback(ctx):\n"
@@ -100,21 +105,22 @@ def test_static_linter_rules_c011_to_c018_and_runtime_diagnostics():
         "    ctx.state['k2'] = box\n"
     )
     aliasing_cb2 = (
-        "def before_agent_callback(ctx):\n"
-        "    ctx.state['k2']['items'].pop()\n"
+        "def before_agent_callback(ctx):\n    ctx.state['k2']['items'].pop()\n"
     )
     alias_runner = CallbackChainRunner.from_callbacks(
         {"before_agent": [("ac_01", aliasing_cb1), ("ac_02", aliasing_cb2)]},
         new_session=False,
     )
-    diff = alias_runner.compare_modes(CallbackContext(state={}), stage="before_agent")
+    diff = alias_runner.compare_modes(
+        CallbackContext(state={}), stage="before_agent"
+    )
     assert diff.has_state_diff is True
     assert any("aliasing" in w for w in diff.combined_trace.warnings)
     explanations = diff.explain()
     assert any("C012" in e and "Aliasing" in e for e in explanations)
 
 
-def test_lint_customer_false_positive_regressions():
+def test_lint_customer_false_positive_regressions() -> None:
     """Verifies no false positives on guarded returns, nested functions, and state aliases."""
     noop_bm = "def before_model_callback(callback_context, llm_request):\n    return None\n"
     noop_am = "def after_model_callback(callback_context, llm_response):\n    return None\n"
@@ -219,7 +225,7 @@ def test_lint_customer_false_positive_regressions():
     assert r_l6.lint("before_agent") == []
 
 
-def test_c014_severity_grading_and_c016_content_alias():
+def test_c014_severity_grading_and_c016_content_alias() -> None:
     """Verifies C014 INFO vs WARNING severity grading and C016 content alias detection."""
     c_reset = (
         "def before_agent_callback(callback_context):\n"
@@ -255,7 +261,7 @@ def test_c014_severity_grading_and_c016_content_alias():
     assert [(f.rule_id, f.line) for f in s5_findings] == [("C016", 4)]
 
 
-def test_cxas_lint_integration_c011_to_c018(tmp_path: Path):
+def test_cxas_lint_integration_c011_to_c018(tmp_path: Path) -> None:
     """Verifies C011-C018 registration in `cxas lint` RuleRegistry and `run_rules` execution."""
     registry = build_registry()
     for rule_id in (
@@ -340,11 +346,8 @@ def test_cxas_lint_integration_c011_to_c018(tmp_path: Path):
 
 def test_c019_load_error_global_mapping_and_lazy_import(
     tmp_path: Path,
-):
+) -> None:
     """Verifies C019 load error reporting, global callback mapping, and lazy pytest import."""
-    import subprocess
-    import sys
-
     # Importing build_registry in a fresh python process does not import pytest
     proc = subprocess.run(
         [
@@ -375,17 +378,11 @@ def test_c019_load_error_global_mapping_and_lazy_import(
 
     # Global callback chain context and C019 on broken agent callback path
     app_dir = tmp_path / "global_and_broken_app"
-    global_cb_dir = (
-        app_dir / "global_before_model_callbacks" / "global_bm_01"
-    )
+    global_cb_dir = app_dir / "global_before_model_callbacks" / "global_bm_01"
     agent_ok_dir = app_dir / "agents" / "ok_agent"
-    agent_bm_dir = (
-        agent_ok_dir / "before_model_callbacks" / "agent_bm_01"
-    )
+    agent_bm_dir = agent_ok_dir / "before_model_callbacks" / "agent_bm_01"
     agent_broken_dir = app_dir / "agents" / "broken_agent"
-    broken_cb_dir = (
-        agent_broken_dir / "before_agent_callbacks" / "broken_cb_01"
-    )
+    broken_cb_dir = agent_broken_dir / "before_agent_callbacks" / "broken_cb_01"
     global_cb_dir.mkdir(parents=True)
     agent_bm_dir.mkdir(parents=True)
     broken_cb_dir.mkdir(parents=True)

@@ -19,12 +19,13 @@ from __future__ import annotations
 import copy
 import datetime
 import json
-import os
 import pickle
 import re
 import sys
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 import pytest
 
@@ -36,17 +37,12 @@ from cxas_scrapi.evals.callback_chain import (
     AgentAssertionError,
     CallbackChainRunner,
     MockLlm,
-    SessionExpectation,
     SessionSimulator,
     SnapshotManager,
-    StageExpectation,
     ToolSpy,
-    TurnExpectation,
     expect_session,
     expect_stage,
     expect_turn,
-    serialize_session_snapshot,
-    serialize_stage_snapshot,
     serialize_turn_snapshot,
 )
 from cxas_scrapi.utils.callback_libs import (
@@ -69,12 +65,8 @@ def _create_banking_agent_fixture(tmp_path: Path) -> Path:
     """Builds a self-contained retail banking agent directory for end-to-end testing."""
     app_dir = tmp_path / "banking_app"
     agent_dir = app_dir / "agents" / "banking_agent"
-    cb1_dir = (
-        agent_dir / "before_agent_callbacks" / "before_agent_callbacks_01"
-    )
-    cb2_dir = (
-        agent_dir / "before_agent_callbacks" / "before_agent_callbacks_02"
-    )
+    cb1_dir = agent_dir / "before_agent_callbacks" / "before_agent_callbacks_01"
+    cb2_dir = agent_dir / "before_agent_callbacks" / "before_agent_callbacks_02"
     bm_dir = agent_dir / "before_model_callbacks" / "before_model_guard"
     tool_dir = app_dir / "tools" / "get_balances"
 
@@ -203,7 +195,9 @@ def test_public_exports_across_all_package_levels() -> None:
     for mod in (cc, ce, cxas_scrapi.evals, cxas_scrapi):
         for sym in expected_symbols:
             assert hasattr(mod, sym), f"{sym} missing on {mod.__name__}"
-            assert sym in mod.__all__, f"{sym} missing in {mod.__name__}.__all__"
+            assert sym in mod.__all__, (
+                f"{sym} missing in {mod.__name__}.__all__"
+            )
 
 
 def test_symbol_alignments_on_traces_and_runner() -> None:
@@ -380,17 +374,11 @@ def test_banking_agent_balance_and_security_end_to_end(
         "current_account", "ACC-100020003000"
     ).to_contain_in_system_instruction(
         "Retail Banking Assistant"
-    ).not_.to_leak_in_prompt(
-        "SECRET_P1"
-    ).to_have_called_tool(
+    ).not_.to_leak_in_prompt("SECRET_P1").to_have_called_tool(
         "get_balances", with_args={"balance_flag": 0}
-    ).to_reply_matching(
-        r"1250\s+EUR", regex=True
-    ).to_have_final_state(
+    ).to_reply_matching(r"1250\s+EUR", regex=True).to_have_final_state(
         "current_account", "ACC-100020003000"
-    ).to_match_snapshot(
-        "banking_balance_turn"
-    )
+    ).to_match_snapshot("banking_balance_turn")
 
     # Second run against the written snapshot must pass identically
     expect_turn(trace, snapshot_dir=snap_dir).to_match_snapshot(
@@ -442,23 +430,15 @@ def test_stage_expectation_matchers_and_not_chaining(tmp_path: Path) -> None:
         (out, trace), snapshot_dir=tmp_path
     ).to_succeed_without_errors().to_succeed().to_have_executed(
         "cb_one", "cb_two", exact_order=True
-    ).not_.to_have_executed(
+    ).not_.to_have_executed("cb_three").to_have_skipped(
         "cb_three"
-    ).to_have_skipped(
-        "cb_three"
-    ).to_have_short_circuited(
-        at_callback="cb_two"
-    ).to_short_circuit(
+    ).to_have_short_circuited(at_callback="cb_two").to_short_circuit(
         by="cb_two"
-    ).to_return_override(
-        Content
-    ).to_return_override(
+    ).to_return_override(Content).to_return_override(
         Content.from_text("short-circuit reply")
     ).not_.to_continue().to_set_state(
         step_1="done", count=42
-    ).to_have_state_key(
-        "step_1", "done"
-    ).to_have_added_state(
+    ).to_have_state_key("step_1", "done").to_have_added_state(
         "step_1", in_callback="cb_one", step_1="done"
     ).to_have_modified_state(
         "existing", in_callback="cb_one", existing="updated"
@@ -472,9 +452,7 @@ def test_stage_expectation_matchers_and_not_chaining(tmp_path: Path) -> None:
         "non_existent_tool"
     ).to_have_no_warnings().not_.to_be_lint_clean().to_be_lint_clean(
         ignore_codes=["C011"]
-    ).to_match_snapshot(
-        "stage_short_circuit"
-    )
+    ).to_match_snapshot("stage_short_circuit")
 
     # Verify None value check in to_have_state_key
     trace.final_state["nullable"] = None
@@ -487,7 +465,11 @@ def test_stage_expectation_matchers_and_not_chaining(tmp_path: Path) -> None:
 
     # Preserve state check on no-op stage
     noop_runner = CallbackChainRunner.from_callbacks(
-        {"after_agent": [("noop", "def after_agent_callback(ctx): return None")]}
+        {
+            "after_agent": [
+                ("noop", "def after_agent_callback(ctx): return None")
+            ]
+        }
     )
     ctx_noop = CallbackContext(state={"keep": "same"})
     noop_runner.run_after_agent(ctx_noop)
@@ -598,7 +580,9 @@ def test_agent_assertion_error_traces_root_cause_callback_and_tool() -> None:
     assert "[State Mutation Lineage]:" in str(err)
 
     # Tool-induced state mutation attribution in lineage
-    def mutating_tool(args: dict[str, Any], tool_ctx: ToolContext) -> dict[str, Any]:
+    def mutating_tool(
+        args: dict[str, Any], tool_ctx: ToolContext
+    ) -> dict[str, Any]:
         tool_ctx.state["account_status"] = "MUTATED_BY_TOOL"
         return {"ok": True}
 
@@ -659,7 +643,10 @@ def test_turn_expectation_all_matchers() -> None:
         .on_hop(1)
         .call_tools(
             [
-                ("get_balance", {"account_id": "ACC_1", "include_pending": True}),
+                (
+                    "get_balance",
+                    {"account_id": "ACC_1", "include_pending": True},
+                ),
                 ("blocked_tool", {"reason": "test"}),
             ]
         )
@@ -686,9 +673,7 @@ def test_turn_expectation_all_matchers() -> None:
         "System prompt for verified user", hop=1
     ).to_have_in_prompt(
         re.compile(r"verified\s+user"), hop=1
-    ).to_have_unresolved_placeholders(
-        hop=1
-    ).to_have_called_tool(
+    ).to_have_unresolved_placeholders(hop=1).to_have_called_tool(
         "get_balance",
         with_args={"account_id": "ACC_1", "include_pending": True},
         times=1,
@@ -703,19 +688,11 @@ def test_turn_expectation_all_matchers() -> None:
         "get_balance", balance=500, currency="EUR"
     ).to_short_circuit_tool(
         "blocked_tool", by="bt_guard"
-    ).to_have_short_circuited_at(
-        "before_tool", "bt_guard"
-    ).to_reply_matching(
+    ).to_have_short_circuited_at("before_tool", "bt_guard").to_reply_matching(
         r"500\s+EUR", regex=True
-    ).to_reply_with(
-        re.compile(r"500\s+EUR")
-    ).to_set_state(
+    ).to_reply_with(re.compile(r"500\s+EUR")).to_set_state(
         tier="gold"
-    ).to_have_final_state(
-        "tier", "gold"
-    ).to_have_state_key(
-        "tier", "gold"
-    )
+    ).to_have_final_state("tier", "gold").to_have_state_key("tier", "gold")
 
     spy.assert_called_once().assert_called_with(
         account_id="ACC_1", include_pending=True
@@ -769,14 +746,14 @@ def test_leak_in_prompt_detects_tool_response_and_tool_schema_leaks(
         initial_state={},
         llm_callable=llm,
         tool_impls={
-            "get_balances": lambda **kw: {"secret": "SECRET_IN_FUNCTION_RESPONSE"}
+            "get_balances": lambda **kw: {
+                "secret": "SECRET_IN_FUNCTION_RESPONSE"
+            }
         },
     )
     expect_turn(trace).to_leak_in_prompt("SECRET_IN_FUNCTION_RESPONSE")
     with pytest.raises(AgentAssertionError):
-        expect_turn(trace).not_.to_leak_in_prompt(
-            "SECRET_IN_FUNCTION_RESPONSE"
-        )
+        expect_turn(trace).not_.to_leak_in_prompt("SECRET_IN_FUNCTION_RESPONSE")
 
 
 def test_turn_expectation_single_part_on_tool_call_and_system_tools() -> None:
@@ -800,11 +777,7 @@ def test_turn_expectation_single_part_on_tool_call_and_system_tools() -> None:
         "transfer_to_agent"
     ).to_have_Only_single_part_On_client_function(
         "transfer_to_agent"
-    ).to_have_transferred_to(
-        "specialist"
-    ).to_transfer_to(
-        "specialist"
-    )
+    ).to_have_transferred_to("specialist").to_transfer_to("specialist")
 
     multi_part_resp = LlmResponse.from_parts(
         [
@@ -1053,25 +1026,15 @@ def test_session_expectation_multi_turn_transfers_and_budget(
         sim, snapshot_dir=tmp_path
     ).to_succeed().to_have_zero_fallbacks().to_complete_turns(
         2
-    ).to_have_turn_count(
-        2
-    ).to_have_routed_agents(
+    ).to_have_turn_count(2).to_have_routed_agents(
         "router_agent", "billing_agent"
-    ).to_follow_agent_path(
-        "router_agent", "billing_agent"
-    ).to_end_on_agent(
+    ).to_follow_agent_path("router_agent", "billing_agent").to_end_on_agent(
         "billing_agent"
-    ).to_have_final_state(
-        "visited_billing", True
-    ).to_set_state(
+    ).to_have_final_state("visited_billing", True).to_set_state(
         visited_router=True, visited_billing=True
-    ).to_have_state_key(
-        "session_started", True
-    ).to_stay_within_budget(
+    ).to_have_state_key("session_started", True).to_stay_within_budget(
         max_total_tokens=500, max_duration_ms=60000.0
-    ).to_match_snapshot(
-        "multi_turn_billing_session"
-    )
+    ).to_match_snapshot("multi_turn_billing_session")
 
     with pytest.raises(AgentAssertionError, match="budget"):
         expect_session(sim).to_stay_within_budget(max_total_tokens=10)
@@ -1122,8 +1085,7 @@ def test_snapshot_scrubbing_structured_drift_and_negation(
 
     snap_payload = serialize_turn_snapshot(trace_v1, include_full_prompt=True)
     assert (
-        snap_payload["final_state"]["current_date"]
-        == "<SCRUBBED_CURRENT_DATE>"
+        snap_payload["final_state"]["current_date"] == "<SCRUBBED_CURRENT_DATE>"
     )
     assert snap_payload["final_state"]["tag_set"] == ["a", "b"]
     assert snap_payload["final_state"]["nan_val"] == "<NaN>"
@@ -1341,8 +1303,7 @@ def test_negated_multi_name_matchers_require_none_of() -> None:
                 ),
                 (
                     "cb_skipped",
-                    "def before_agent_callback(ctx):\n"
-                    "    return None\n",
+                    "def before_agent_callback(ctx):\n    return None\n",
                 ),
             ]
         },
@@ -1415,9 +1376,7 @@ def test_negated_multi_name_matchers_require_none_of() -> None:
         expect_turn(turn_trace).not_.to_expose_tools(
             "admin_delete", "admin_refund"
         )
-    expect_turn(turn_trace).not_.to_expose_tools(
-        "admin_refund", "admin_export"
-    )
+    expect_turn(turn_trace).not_.to_expose_tools("admin_refund", "admin_export")
 
     with pytest.raises(AgentAssertionError):
         expect_turn(turn_trace).not_.to_have_executed_callback(
@@ -1428,7 +1387,9 @@ def test_negated_multi_name_matchers_require_none_of() -> None:
     )
 
 
-def test_noop_callback_int_to_float_coercion_not_reported_as_modification() -> None:
+def test_noop_callback_int_to_float_coercion_not_reported_as_modification() -> (
+    None
+):
     runner = CallbackChainRunner.from_callbacks(
         {
             "before_agent": [
@@ -1509,9 +1470,7 @@ def test_inject_state_update_sources_and_leak_field_safety() -> None:
     )
 
     # source="any" merges both with <state_update> taking precedence over <current_state>
-    expect_turn(trace).to_inject_state_update(
-        "stale_only", "yes", source="any"
-    )
+    expect_turn(trace).to_inject_state_update("stale_only", "yes", source="any")
     expect_turn(trace).to_inject_state_update("tier", "gold", source="any")
 
     # Snapshot records injected_state_update and injected_current_state separately
@@ -1603,8 +1562,8 @@ def test_callback_evals_registers_pytest_plugin_and_persists_snapshots(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from cxas_scrapi.cli.main import main as cli_main
-    from cxas_scrapi.evals.callback_evals import CallbackEvals
+    from cxas_scrapi.cli.main import main as cli_main  # noqa: PLC0415
+    from cxas_scrapi.evals.callback_evals import CallbackEvals  # noqa: PLC0415
 
     app_dir = tmp_path / "sample_app"
     agent_dir = app_dir / "agents" / "support_agent"
@@ -1737,7 +1696,7 @@ def test_resolve_llm_missing_json_and_mockllm_snapshot_validation(
     tmp_path: Path,
 ) -> None:
     """Verifies resolve_llm raises FileNotFoundError for missing .json and MockLlm.from_snapshot validates inputs."""
-    from cxas_scrapi.evals.callback_chain import resolve_llm
+    from cxas_scrapi.evals.callback_chain import resolve_llm  # noqa: PLC0415
 
     missing_json = tmp_path / "does_not_exist.json"
     with pytest.raises(FileNotFoundError, match="LLM snapshot file not found"):
@@ -1792,7 +1751,7 @@ def test_unnamed_snapshot_negation_and_ci_mode(tmp_path: Path) -> None:
 
     # Reset unnamed counter as if starting a new test run, match 1st unnamed,
     # then assert .not_.to_match_snapshot() on 2nd unnamed snapshot
-    from cxas_scrapi.evals.callback_chain.snapshots import (
+    from cxas_scrapi.evals.callback_chain.snapshots import (  # noqa: PLC0415
         _ACTIVE_SNAPSHOT_CONTEXT,
         _reset_unnamed_snapshot_counts,
     )
@@ -1814,9 +1773,11 @@ def test_unnamed_snapshot_negation_and_ci_mode(tmp_path: Path) -> None:
         ci_mgr.assert_matches({"x": 1}, name="missing_in_ci")
 
 
-def test_background_thread_traces_attach_to_innermost_collector_and_combined_safe_copy() -> None:
+def test_background_thread_traces_attach_to_innermost_collector_and_combined_safe_copy() -> (
+    None
+):
     """Verifies ThreadPoolExecutor worker threads attach traces to the innermost active collector and combined mode isolates non-deepcopyable state."""
-    from concurrent.futures import ThreadPoolExecutor
+    from concurrent.futures import ThreadPoolExecutor  # noqa: PLC0415
 
     runner = CallbackChainRunner.from_callbacks(
         {
@@ -1833,11 +1794,11 @@ def test_background_thread_traces_attach_to_innermost_collector_and_combined_saf
 
     main_turns: list[Any] = []
     main_stages: list[Any] = []
-    from cxas_scrapi.evals.callback_chain.runner import (
+    from cxas_scrapi.evals.callback_chain.runner import (  # noqa: PLC0415
         _pop_active_stage_collector,
         _push_active_stage_collector,
     )
-    from cxas_scrapi.evals.callback_chain.turn import (
+    from cxas_scrapi.evals.callback_chain.turn import (  # noqa: PLC0415
         _pop_active_turn_collector,
         _push_active_turn_collector,
     )
@@ -1845,6 +1806,7 @@ def test_background_thread_traces_attach_to_innermost_collector_and_combined_saf
     t_tok = _push_active_turn_collector(main_turns)
     s_tok = _push_active_stage_collector(main_stages)
     try:
+
         def _bg_work() -> None:
             runner.run_turn(
                 user_input="from_worker_thread",
@@ -1889,4 +1851,3 @@ def test_background_thread_traces_attach_to_innermost_collector_and_combined_saf
     assert comb_trace.steps[0].state_after["items"] == [1, 2]
     assert comb_trace.steps[1].state_after["items"] == [1, 2, 3]
     assert any("[deepcopy]" in w for w in comb_trace.warnings)
-

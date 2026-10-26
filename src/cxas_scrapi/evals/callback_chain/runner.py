@@ -12,7 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""CallbackChainRunner implementation for CES multi-callback chains (V1 & V2 images)."""
+"""CallbackChainRunner implementation for CES multi-callback chains (V1 & V2
+images).
+"""
 
 from __future__ import annotations
 
@@ -27,10 +29,12 @@ import threading
 import time
 import traceback
 import typing
-from collections.abc import Mapping, Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping, Sequence
 
 from cxas_scrapi.evals.callback_chain.compare import execute_compare_modes
 from cxas_scrapi.evals.callback_chain.errors import resolve_error_outcome
@@ -124,7 +128,9 @@ _STAGE_COLLECTOR_LOCK = threading.Lock()
 def _push_active_stage_collector(
     collector: list[CallbackTrace],
 ) -> contextvars.Token[list[CallbackTrace] | None]:
-    """Registers an active stage trace collector in ContextVar and thread-fallback stack."""
+    """Registers an active stage trace collector in ContextVar and
+    thread-fallback stack.
+    """
     with _STAGE_COLLECTOR_LOCK:
         _FALLBACK_STAGE_COLLECTOR_STACK.append(collector)
     return _ACTIVE_STAGE_COLLECTOR.set(collector)
@@ -134,7 +140,9 @@ def _pop_active_stage_collector(
     token: contextvars.Token[list[CallbackTrace] | None] | None,
     collector: list[CallbackTrace] | None = None,
 ) -> None:
-    """Restores the previous stage trace collector in ContextVar and thread-fallback stack."""
+    """Restores the previous stage trace collector in ContextVar and
+    thread-fallback stack.
+    """
     if token is not None:
         _ACTIVE_STAGE_COLLECTOR.reset(token)
     else:
@@ -150,7 +158,9 @@ def _pop_active_stage_collector(
 
 
 def _record_collected_stage(stage_trace: CallbackTrace) -> None:
-    """Appends `stage_trace` to the active ContextVar or thread-fallback collector."""
+    """Appends `stage_trace` to the active ContextVar or thread-fallback
+    collector.
+    """
     collector = _ACTIVE_STAGE_COLLECTOR.get()
     if collector is None:
         with _STAGE_COLLECTOR_LOCK:
@@ -164,10 +174,13 @@ def _record_collected_stage(stage_trace: CallbackTrace) -> None:
 def _safe_copy_state_dict(
     state: dict[str, Any],
 ) -> tuple[dict[str, Any], str | None]:
-    """Deep-copies `state`, falling back to recursive structural copy if an entry resists `deepcopy`."""
+    """Deep-copies `state`, falling back to recursive structural copy if an
+    entry resists `deepcopy`.
+    """
     try:
         return copy.deepcopy(state), None
     except Exception as exc:
+
         def _copy_val(val: Any) -> Any:
             try:
                 return copy.deepcopy(val)
@@ -184,21 +197,31 @@ def _safe_copy_state_dict(
 
         return (
             {k: _copy_val(v) for k, v in state.items()},
-            f"[deepcopy] Non-deepcopyable object in state ({type(exc).__name__}: {exc}); isolated container copy used.",
+            (
+                "[deepcopy] Non-deepcopyable object in state "
+                f"({type(exc).__name__}: {exc}); isolated container copy used."
+            ),
         )
 
 
 class CallbackChainRunner:
-    """Executes multi-callback chains with CES runtime dual-mode and V1/V2 image semantics.
+    """Executes multi-callback chains with CES runtime dual-mode and V1/V2 image
+    semantics.
 
     Note on concurrency and security:
-    - Callback steps capture `stdout` and `stderr` via `contextlib.redirect_stdout` /
-      `redirect_stderr` (which mutate process-global `sys.stdout` / `sys.stderr`), and
-      traces emitted from context-less worker threads (e.g. `ThreadPoolExecutor`) are
-      attributed to the innermost active collector on the fallback stack. Concurrent
-      trace collectors or `CallbackChainRunner` executions across multiple threads in the
+    - Callback steps capture `stdout` and `stderr` via
+      `contextlib.redirect_stdout` /
+      `redirect_stderr` (which mutate process-global `sys.stdout` /
+      `sys.stderr`), and
+      traces emitted from context-less worker threads (e.g.
+      `ThreadPoolExecutor`) are
+      attributed to the innermost active collector on the fallback stack.
+      Concurrent
+      trace collectors or `CallbackChainRunner` executions across multiple
+      threads in the
       same process are not supported.
-    - `CallbackChainRunner` is a local developer testing and evaluation harness that
+    - `CallbackChainRunner` is a local developer testing and evaluation harness
+      that
       executes callback and tool Python files in-process with standard Python
       `__builtins__`; it is not a security sandbox for untrusted code.
     """
@@ -239,46 +262,67 @@ class CallbackChainRunner:
 
         Args:
             agent_dir: Path to an agent directory (`agents/<agent_name>`).
-            app_dir: Optional path to the app root directory containing `app.json`.
+            app_dir: Optional path to the app root directory containing
+            `app.json`.
             mode: Default execution mode (`"per_callback"` or `"combined"`).
-                Defaults to `os.environ.get("CXAS_CALLBACK_MODE")` or `"per_callback"`.
-            image_version: Sandbox image version (`"v1"` or `"v2"`). Defaults to `"v1"`,
+                Defaults to `os.environ.get("CXAS_CALLBACK_MODE")` or
+                `"per_callback"`.
+            image_version: Sandbox image version (`"v1"` or `"v2"`). Defaults to
+            `"v1"`,
                 matching the production CES sandbox default.
             new_session: Whether to inject `app.json` non-null default variables
-                and predefined variables (`current_date`, `_session`) on the first
+                and predefined variables (`current_date`, `_session`) on the
+                first
                 stage executed for a `CallbackContext` instance.
-            allow_content_update: Corresponds to CES `allow_before_model_content_update`.
-            simulate_struct_numbers: When `True` (default), simulates Protobuf `Struct`
+            allow_content_update: Corresponds to CES
+            `allow_before_model_content_update`.
+            simulate_struct_numbers: When `True` (default), simulates Protobuf
+            `Struct`
                 number conversion (`int` values converted to `float`) on session
-                state, `tool_input`, `tool_response`, and `per_callback` round-trips.
-            time_zone: Optional IANA time zone for `current_date` (e.g., `"Europe/Berlin"`).
-                Defaults to `app.json` `timeZoneSettings.timeZone`, or UTC (`"Z"`).
+                state, `tool_input`, `tool_response`, and `per_callback`
+                round-trips.
+            time_zone: Optional IANA time zone for `current_date` (e.g.,
+            `"Europe/Berlin"`).
+                Defaults to `app.json` `timeZoneSettings.timeZone`, or UTC
+                (`"Z"`).
             modality: Session modality (`"TEXT"`, `"VOICE"`, `"UNSPECIFIED"`).
-            channel: Session channel (`"API"`, `"WEB_UI"`, `"GOOGLE_TELEPHONY_PLATFORM"`, etc.).
-            session_metadata: Optional metadata dict injected as `session_metadata`
+            channel: Session channel (`"API"`, `"WEB_UI"`,
+            `"GOOGLE_TELEPHONY_PLATFORM"`, etc.).
+            session_metadata: Optional metadata dict injected as
+            `session_metadata`
                 when non-empty.
             mock_tools: Mapping of tool names to return values or callables.
             app_config: Optional in-memory override for `app.json`.
             agent_config: Optional in-memory override for `<agent>.json`.
-            callbacks: Optional in-memory callback specifications keyed by stage.
-            error_handling_settings: Optional override for `app.json` `errorHandlingSettings`.
-            error_handling_strategy: Optional shorthand override for `errorHandlingStrategy`.
-            max_fallback_attempts: Optional shorthand override for `maxFallbackAttempts`.
-            initial_consecutive_fallback_count: Default starting `consecutive_fallback_count`
+            callbacks: Optional in-memory callback specifications keyed by
+            stage.
+            error_handling_settings: Optional override for `app.json`
+            `errorHandlingSettings`.
+            error_handling_strategy: Optional shorthand override for
+            `errorHandlingStrategy`.
+            max_fallback_attempts: Optional shorthand override for
+            `maxFallbackAttempts`.
+            initial_consecutive_fallback_count: Default starting
+            `consecutive_fallback_count`
                 for each stage run (stateless across runs unless overridden).
-            enable_exception_handling: Whether runtime callback exception handling is enabled
+            enable_exception_handling: Whether runtime callback exception
+            handling is enabled
                 (online default: `True`).
-            force_enable_exception_handling: When `True`, forces fallback exception handling
+            force_enable_exception_handling: When `True`, forces fallback
+            exception handling
                 regardless of strategy settings (online default: `False`).
             raise_on_error: If `True`, re-raises callback exceptions directly.
-            strict: Alias/companion for `raise_on_error`. When `True`, re-raises any
-                callback exception instead of silently returning a fallback response.
+            strict: Alias/companion for `raise_on_error`. When `True`, re-raises
+            any
+                callback exception instead of silently returning a fallback
+                response.
         """
         env_mode = os.environ.get(CHAIN_MODE_ENV)
         eff_mode: str = mode or env_mode or "per_callback"
         if eff_mode not in ("per_callback", "combined"):
             raise ValueError(
-                f"Invalid mode '{eff_mode}'. Expected 'per_callback' or 'combined'."
+                f"Invalid mode '{eff_mode}'. Expected 'per_callback' or "
+                "'combined'."
             )
         self.mode: ExecutionMode = eff_mode  # type: ignore[assignment]
         self.image_version: ImageVersion = normalize_image_version(
@@ -456,7 +500,7 @@ class CallbackChainRunner:
         session_metadata: dict[str, Any] | None = None,
         mock_tools: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> "CallbackChainRunner":
+    ) -> CallbackChainRunner:
         """Constructs a CallbackChainRunner from an agent directory path."""
         return cls(
             agent_dir=agent_dir,
@@ -492,8 +536,10 @@ class CallbackChainRunner:
         session_metadata: dict[str, Any] | None = None,
         mock_tools: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> "CallbackChainRunner":
-        """Constructs a CallbackChainRunner from an application root directory and optional agent name."""
+    ) -> CallbackChainRunner:
+        """Constructs a CallbackChainRunner from an application root directory
+        and optional agent name.
+        """
         ap_path = Path(app_dir).resolve()
         target_agent = agent_name
         if not target_agent:
@@ -546,8 +592,10 @@ class CallbackChainRunner:
         time_zone: str | None = None,
         mock_tools: dict[str, Any] | None = None,
         **kwargs: Any,
-    ) -> "CallbackChainRunner":
-        """Constructs a CallbackChainRunner directly from in-memory callback specs."""
+    ) -> CallbackChainRunner:
+        """Constructs a CallbackChainRunner directly from in-memory callback
+        specs.
+        """
         return cls(
             callbacks=callbacks,
             app_config=app_config,
@@ -566,7 +614,9 @@ class CallbackChainRunner:
     def _resolve_paths(
         agent_dir: str | Path, app_dir: str | Path | None = None
     ) -> tuple[Path, Path | None]:
-        """Resolves `agent_dir` and `app_dir` using explicit paths and `CXAS_SEARCH_PATHS`."""
+        """Resolves `agent_dir` and `app_dir` using explicit paths and
+        `CXAS_SEARCH_PATHS`.
+        """
         raw_path = Path(agent_dir)
         candidates: list[Path] = [raw_path]
 
@@ -609,10 +659,7 @@ class CallbackChainRunner:
                 if curr.parent == curr:
                     break
                 curr = curr.parent
-            if (
-                resolved_app is None
-                and resolved_agent.parent.name == "agents"
-            ):
+            if resolved_app is None and resolved_agent.parent.name == "agents":
                 resolved_app = resolved_agent.parent.parent
 
         return resolved_agent, resolved_app
@@ -632,12 +679,16 @@ class CallbackChainRunner:
         )
 
     def _load_configured_callbacks(self) -> None:
-        """Loads global callbacks (before_model/after_model) followed by agent callbacks."""
+        """Loads global callbacks (before_model/after_model) followed by agent
+        callbacks.
+        """
         for bad_key in UNSUPPORTED_GLOBAL_JSON_KEYS:
             if bad_key in self.app_config:
                 logger.warning(
-                    "Ignoring unsupported global callback key '%s' in app.json. "
-                    "CES App proto only supports globalBeforeModelCallbacks and "
+                    "Ignoring unsupported global callback key '%s' in "
+                    "app.json. "
+                    "CES App proto only supports globalBeforeModelCallbacks "
+                    "and "
                     "globalAfterModelCallbacks.",
                     bad_key,
                 )
@@ -735,7 +786,9 @@ class CallbackChainRunner:
     def get_callbacks(
         self, stage: str, *, include_disabled: bool = False
     ) -> list[CallbackSpec]:
-        """Returns configured callbacks for `stage` (excluding disabled by default)."""
+        """Returns configured callbacks for `stage` (excluding disabled by
+        default).
+        """
         norm_stage = normalize_stage(stage)
         all_specs = self._stage_callbacks.get(norm_stage, [])
         if include_disabled:
@@ -794,7 +847,8 @@ class CallbackChainRunner:
                 )
             else:
                 raise TypeError(
-                    f"Unsupported callback spec item type: {type(item).__name__}"
+                    "Unsupported callback spec item type: "
+                    f"{type(item).__name__}"
                 )
         self._stage_callbacks[norm_stage] = normalized
 
@@ -821,7 +875,9 @@ class CallbackChainRunner:
         tool_input: dict[str, Any] | None = None,
         tool_response: dict[str, Any] | None = None,
     ) -> Path:
-        """Records stage execution inputs to a JSON fixture file for replay by `compare_modes`."""
+        """Records stage execution inputs to a JSON fixture file for replay by
+        `compare_modes`.
+        """
         norm_stage = normalize_stage(stage)
         eff_state = copy.deepcopy(state if state is not None else ctx.state)
         session_initialized = bool(
@@ -888,7 +944,8 @@ class CallbackChainRunner:
                 target_dir = self.agent_dir / "compare_fixtures" / norm_stage
             else:
                 raise ValueError(
-                    "record_fixture requires `output_path` (or `path` / `fixtures_dir`) "
+                    "record_fixture requires `output_path` (or `path` / "
+                    "`fixtures_dir`) "
                     "when `runner.agent_dir` is not set."
                 )
             target_dir.mkdir(parents=True, exist_ok=True)
@@ -910,7 +967,9 @@ class CallbackChainRunner:
         stage: str | None = None,
         **kwargs: Any,
     ) -> ModeDiffReport:
-        """Loads a JSON fixture file and runs `compare_modes` with its inputs."""
+        """Loads a JSON fixture file and runs `compare_modes` with its
+        inputs.
+        """
         fpath = Path(fixture_path)
         data = json.loads(fpath.read_text(encoding="utf-8"))
         eff_stage = normalize_stage(
@@ -978,7 +1037,9 @@ class CallbackChainRunner:
         image_version: ImageVersion | None = None,
         include_info: bool = False,
     ) -> list[CallbackChainLintFinding]:
-        """Runs cross-callback AST static analysis (C011–C019) on configured stage(s)."""
+        """Runs cross-callback AST static analysis (C011-C019) on configured
+        stage(s).
+        """
         eff_img = (
             self.image_version
             if image_version is None
@@ -1024,13 +1085,10 @@ class CallbackChainRunner:
         if self.time_zone is not None:
             return self.time_zone
         return (
-            (
-                self.app_config.get("timeZoneSettings")
-                or self.app_config.get("time_zone_settings")
-                or {}
-            ).get("timeZone")
-            or ""
-        )
+            self.app_config.get("timeZoneSettings")
+            or self.app_config.get("time_zone_settings")
+            or {}
+        ).get("timeZone") or ""
 
     def build_initial_state(
         self,
@@ -1115,9 +1173,11 @@ class CallbackChainRunner:
         image_version: ImageVersion = "v1",
         extra_globals: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Builds the base execution namespace matching V1 (`ces_public`) or V2 sandbox scope.
+        """Builds the base execution namespace matching V1 (`ces_public`) or V2
+        sandbox scope.
 
-        Note: In-process execution exposes standard `__builtins__` for local testing
+        Note: In-process execution exposes standard `__builtins__` for local
+        testing
         compatibility and is not an isolated security sandbox.
         """
         sync_tools = MockTools(eff_mock_tools, call_log=tool_call_log)
@@ -1128,7 +1188,7 @@ class CallbackChainRunner:
                 "__builtins__": __builtins__,
                 "json": json,
                 "Any": typing.Any,
-                "List": typing.List,
+                "List": typing.List,  # noqa: UP006
                 "Optional": typing.Optional,
                 # Symbols from `from ces_public import *`
                 "FunctionCall": FunctionCall,
@@ -1164,11 +1224,11 @@ class CallbackChainRunner:
                     "base64": callback_libs.base64,
                     "Any": typing.Any,
                     "Callable": typing.Callable,
-                    "Dict": typing.Dict,
-                    "List": typing.List,
+                    "Dict": typing.Dict,  # noqa: UP006
+                    "List": typing.List,  # noqa: UP006
                     "Optional": typing.Optional,
-                    "Set": typing.Set,
-                    "Tuple": typing.Tuple,
+                    "Set": typing.Set,  # noqa: UP006
+                    "Tuple": typing.Tuple,  # noqa: UP006
                     "Union": typing.Union,
                     "StatusError": StatusError,
                     "ExternalResponse": ExternalResponse,
@@ -1195,7 +1255,9 @@ class CallbackChainRunner:
         tool_input: dict[str, Any] | None = None,
         tool_response: dict[str, Any] | None = None,
     ) -> Any:
-        """Invokes the user callback function positionally matching v1/v2_image_callbacks."""
+        """Invokes the user callback function positionally matching
+        v1/v2_image_callbacks.
+        """
         if stage in ("before_agent", "after_agent"):
             return fn(cb_context)
         if stage == "before_model":
@@ -1222,7 +1284,9 @@ class CallbackChainRunner:
         tool_input: dict[str, Any] | None,
         tool_response: dict[str, Any] | None,
     ) -> tuple[Any, str, str]:
-        """Executes a single callback in a fresh namespace copy and captures stdio."""
+        """Executes a single callback in a fresh namespace copy and captures
+        stdio.
+        """
         out_buf = io.StringIO()
         err_buf = io.StringIO()
         cb_ns = base_namespace.copy()
@@ -1247,7 +1311,8 @@ class CallbackChainRunner:
                             cb_ns[k] = v
                 if func_name not in cb_ns or not callable(cb_ns[func_name]):
                     raise NameError(
-                        f"Callback '{spec.name}' did not define callable '{func_name}'"
+                        f"Callback '{spec.name}' did not define callable "
+                        f"'{func_name}'"
                     )
                 raw_ret = self._invoke_callback_fn(
                     cb_ns[func_name],
@@ -1260,8 +1325,8 @@ class CallbackChainRunner:
                     tool_response=tool_response,
                 )
         except Exception as exc:
-            setattr(exc, "_captured_stdout", out_buf.getvalue())
-            setattr(exc, "_captured_stderr", err_buf.getvalue())
+            exc._captured_stdout = out_buf.getvalue()  # type: ignore[attr-defined]
+            exc._captured_stderr = err_buf.getvalue()  # type: ignore[attr-defined]
             raise
         finally:
             _ACTIVE_EXECUTION_CTX.reset(ctx_token)
@@ -1289,7 +1354,9 @@ class CallbackChainRunner:
         record_step: bool = True,
         step_duration_ms: float = 0.0,
     ) -> Any:
-        """Records exception details on `trace`, resolves fallback, and updates `caller_ctx`."""
+        """Records exception details on `trace`, resolves fallback, and updates
+        `caller_ctx`.
+        """
         step_stdout = getattr(exc, "_captured_stdout", "")
         step_stderr = getattr(exc, "_captured_stderr", "")
         if step_stdout:
@@ -1381,14 +1448,17 @@ class CallbackChainRunner:
         updated_tool_input: dict[str, Any] | None,
         strict: bool = False,
     ) -> Any:
-        """Commits state, validates `before_agent` post-condition, and populates trace outputs."""
+        """Commits state, validates `before_agent` post-condition, and populates
+        trace outputs.
+        """
         trace.consecutive_fallback_count_after = 0
         trace.stdout = "".join(stdout_parts)
         trace.stderr = "".join(stderr_parts)
         trace.final_state = copy.deepcopy(committed_state)
         caller_ctx.state = copy.deepcopy(committed_state)
 
-        # Validate before_agent result AFTER state is committed outside the callback error handler.
+        # Validate before_agent result AFTER state is committed outside the
+        # callback error handler.
         if stage == "before_agent" and final_result is not None:
             try:
                 validate_before_agent_result(final_result)
@@ -1397,13 +1467,10 @@ class CallbackChainRunner:
                 trace.error = err_str
                 trace.raw_exception = exc
                 trace.error_phase = "post_validation"
-                trace.failed_callback = (
-                    trace.short_circuited_by
-                    or (
-                        trace.executed_callbacks[-1]
-                        if trace.executed_callbacks
-                        else None
-                    )
+                trace.failed_callback = trace.short_circuited_by or (
+                    trace.executed_callbacks[-1]
+                    if trace.executed_callbacks
+                    else None
                 )
                 trace.culprit_callback = trace.failed_callback
                 trace.error_outcome = "error"
@@ -1448,10 +1515,7 @@ class CallbackChainRunner:
             return final_result
 
         if stage == "before_tool":
-            if (
-                caller_tool_input is not None
-                and updated_tool_input is not None
-            ):
+            if caller_tool_input is not None and updated_tool_input is not None:
                 caller_tool_input.clear()
                 caller_tool_input.update(copy.deepcopy(updated_tool_input))
             trace.final_tool_input = copy.deepcopy(updated_tool_input)
@@ -1493,7 +1557,8 @@ class CallbackChainRunner:
         eff_mode: ExecutionMode = self.mode if mode is None else mode
         if eff_mode not in ("per_callback", "combined"):
             raise ValueError(
-                f"Invalid mode '{eff_mode}'. Expected 'per_callback' or 'combined'."
+                f"Invalid mode '{eff_mode}'. Expected 'per_callback' or "
+                "'combined'."
             )
         eff_image_version: ImageVersion = (
             self.image_version
@@ -1839,14 +1904,17 @@ class CallbackChainRunner:
                             work_req.contents, image_version=image_version
                         ):
                             trace.request_mutations.append(
-                                f"Callback '{spec.name}' mutated llm_request.contents "
-                                "in-place with allow_content_update=False (discarded)."
+                                f"Callback '{spec.name}' mutated "
+                                "llm_request.contents "
+                                "in-place with allow_content_update=False "
+                                "(discarded)."
                             )
                         if getattr(current_request, "model", None) != getattr(
                             work_req, "model", None
                         ):
                             trace.request_mutations.append(
-                                f"Callback '{spec.name}' mutated llm_request.model "
+                                f"Callback '{spec.name}' mutated "
+                                "llm_request.model "
                                 "in-place (not persisted by CES)."
                             )
                     current_request = apply_before_model_request_updates(
@@ -1861,16 +1929,17 @@ class CallbackChainRunner:
                     and normalized_ret is None
                     and original_response is not None
                     and work_resp is not None
-                ):
-                    if json_normalize_for_diff(
+                    and json_normalize_for_diff(
                         original_response, image_version=image_version
-                    ) != json_normalize_for_diff(
+                    )
+                    != json_normalize_for_diff(
                         work_resp, image_version=image_version
-                    ):
-                        trace.response_mutations.append(
-                            f"Callback '{spec.name}' mutated llm_response in-place "
-                            "and returned None (discarded in per_callback mode)."
-                        )
+                    )
+                ):
+                    trace.response_mutations.append(
+                        f"Callback '{spec.name}' mutated llm_response in-place "
+                        "and returned None (discarded in per_callback mode)."
+                    )
 
                 if (
                     stage == "before_tool"
@@ -2051,7 +2120,8 @@ class CallbackChainRunner:
 
             trace.executed_callbacks.append(spec.name)
 
-            # Runtime aliasing detection across distinct top-level keys in shared_ctx.state
+            # Runtime aliasing detection across distinct top-level keys in
+            # shared_ctx.state
             step_aliasing = detect_state_aliasing(shared_ctx.state)
             step_warnings = [
                 f"[aliasing] In '{spec.name}': {w}" for w in step_aliasing
@@ -2060,8 +2130,9 @@ class CallbackChainRunner:
                 if w not in trace.warnings:
                     trace.warnings.append(w)
 
-            # In both v1_image_callbacks and v2_image_callbacks, the Python sandbox loop
-            # checks `if <ret> is not None: break` for ALL stages (including tool stages).
+            # In both v1_image_callbacks and v2_image_callbacks, the Python
+            # sandbox loop checks `if <ret> is not None: break` for ALL stages
+            # (including tool stages).
             loop_breaks = raw_ret is not None
 
             if (
@@ -2092,16 +2163,18 @@ class CallbackChainRunner:
                 and not loop_breaks
                 and pre_step_resp is not None
                 and shared_response is not None
-            ):
-                if json_normalize_for_diff(
+                and json_normalize_for_diff(
                     pre_step_resp, image_version=image_version
-                ) != json_normalize_for_diff(
+                )
+                != json_normalize_for_diff(
                     shared_response, image_version=image_version
-                ):
-                    trace.response_mutations.append(
-                        f"Callback '{spec.name}' mutated llm_response in-place "
-                        "and returned None (discarded at end of chain if None returned)."
-                    )
+                )
+            ):
+                trace.response_mutations.append(
+                    f"Callback '{spec.name}' mutated llm_response in-place "
+                    "and returned None (discarded at end of chain if None "
+                    "returned)."
+                )
 
             step_state_copy, copy_warn = _safe_copy_state_dict(shared_ctx.state)
             if copy_warn:
@@ -2181,28 +2254,26 @@ class CallbackChainRunner:
                 except Exception:
                     culprit = step.name
                     hint = (
-                        f"End-of-chain state serialization failed in combined mode; "
-                        f"unserializable state was first introduced in callback '{culprit}'."
+                        "End-of-chain state serialization failed in combined "
+                        "mode; "
+                        "unserializable state was first introduced in "
+                        f"callback '{culprit}'."
                     )
                     break
             if culprit is None:
-                culprit = (
-                    trace.short_circuited_by
-                    or (
-                        trace.executed_callbacks[-1]
-                        if trace.executed_callbacks
-                        else None
-                    )
+                culprit = trace.short_circuited_by or (
+                    trace.executed_callbacks[-1]
+                    if trace.executed_callbacks
+                    else None
                 )
                 hint = (
-                    f"End-of-chain return/request serialization failed in combined mode "
+                    "End-of-chain return/request serialization failed in "
+                    "combined mode "
                     f"(likely returned by '{culprit}')."
                 )
             if trace.steps:
                 tb_str = "".join(traceback.format_exception(exc))
-                trace.steps[-1].error = (
-                    f"{type(exc).__name__}: {exc}\n{tb_str}"
-                )
+                trace.steps[-1].error = f"{type(exc).__name__}: {exc}\n{tb_str}"
             return self._handle_chain_exception(
                 exc,
                 stage,
@@ -2344,7 +2415,9 @@ class CallbackChainRunner:
         consecutive_fallback_count: int | None = None,
         strict: bool | None = None,
     ) -> tuple[LlmResponse, CallbackTrace]:
-        """Executes the `after_model` callback chain and returns `(effective_response, trace)`."""
+        """Executes the `after_model` callback chain and returns
+        `(effective_response, trace)`.
+        """
         override_resp, trace = self.run_stage(
             "after_model",
             ctx,
@@ -2440,7 +2513,9 @@ class CallbackChainRunner:
         working_tin: dict[str, Any],
         tool_ctx: ToolContext,
     ) -> Any:
-        """Invokes a tool implementation function with `(input, tool_ctx)` or `(input,)`."""
+        """Invokes a tool implementation function with `(input, tool_ctx)` or
+        `(input,)`.
+        """
         return invoke_tool_impl(impl, working_tin, tool_ctx)
 
     @staticmethod
@@ -2454,7 +2529,9 @@ class CallbackChainRunner:
         call_index: int = 0,
     ) -> LlmResponse:
         """Invokes `mock_llm` and validates that it returns an `LlmResponse`."""
-        return invoke_mock_llm(mock_llm, ctx, eff_request, call_index=call_index)
+        return invoke_mock_llm(
+            mock_llm, ctx, eff_request, call_index=call_index
+        )
 
     def render_instruction(
         self,
@@ -2465,7 +2542,9 @@ class CallbackChainRunner:
         substitute_variables: bool = True,
         substitute_single_brace: bool | None = None,
     ) -> str:
-        """Renders the agent's instruction template with CES tags and state variables."""
+        """Renders the agent's instruction template with CES tags and state
+        variables.
+        """
         return render_agent_instruction(
             self,
             state=state,
@@ -2484,7 +2563,9 @@ class CallbackChainRunner:
         *,
         include_end_session: bool | None = None,
     ) -> list[FunctionDeclaration]:
-        """Builds FunctionDeclaration schemas for the agent's tools and child agents."""
+        """Builds FunctionDeclaration schemas for the agent's tools and child
+        agents.
+        """
         return build_agent_tool_declarations(
             self,
             agent_dir=self.agent_dir,
@@ -2504,7 +2585,9 @@ class CallbackChainRunner:
         template_engine: typing.Literal["variables_only", "full"] | None = None,
         substitute_single_brace: bool | None = None,
     ) -> LlmRequest:
-        """Populates `system_instruction`, `tools`, and `<state_update>` on `llm_request`."""
+        """Populates `system_instruction`, `tools`, and `<state_update>` on
+        `llm_request`.
+        """
         req = (
             copy.deepcopy(llm_request)
             if llm_request is not None
@@ -2562,7 +2645,9 @@ class CallbackChainRunner:
         return req
 
     def load_local_tool_impls(self) -> dict[str, Callable[..., Any]]:
-        """Loads local Python tool `run()` callables from the app's tools directory."""
+        """Loads local Python tool `run()` callables from the app's tools
+        directory.
+        """
         return load_local_python_tools(
             self,
             agent_dir=self.agent_dir,
@@ -2611,7 +2696,9 @@ class CallbackChainRunner:
         consecutive_fallback_count: int | None = None,
         strict: bool | None = None,
     ) -> tuple[LlmResponse | None, TurnTrace]:
-        """Executes a single-turn callback and tool pipeline (`execute_turn`)."""
+        """Executes a single-turn callback and tool pipeline
+        (`execute_turn`).
+        """
         return execute_turn(
             self,
             ctx,
@@ -2719,7 +2806,9 @@ class CallbackChainRunner:
         mock_tools: dict[str, Any] | None = None,
         consecutive_fallback_count: int | None = None,
     ) -> ModeDiffReport:
-        """Runs `stage` under both `per_callback` and `combined` modes and diffs results."""
+        """Runs `stage` under both `per_callback` and `combined` modes and diffs
+        results.
+        """
         return execute_compare_modes(
             self,
             ctx,
@@ -2757,14 +2846,16 @@ class CallbackChainRunner:
         mock_tools: dict[str, Any] | None = None,
         consecutive_fallback_count: int | None = None,
     ) -> ModeDiffReport:
-        """Runs `stage` under both `per_callback` and `combined` modes with stage-first ergonomics.
+        """Runs `stage` under both `per_callback` and `combined` modes with
+        stage-first ergonomics.
 
         Builds a fresh `CallbackContext` (or `ToolContext` for tool stages) from
         `initial_state` when `ctx` is omitted.
         """
         if ctx is not None and initial_state is not None:
             raise ValueError(
-                "compare_stage_modes accepts either `ctx` or `initial_state`, not both."
+                "compare_stage_modes accepts either `ctx` or `initial_state`, "
+                "not both."
             )
         norm_stage = normalize_stage(stage)
         if ctx is None:
