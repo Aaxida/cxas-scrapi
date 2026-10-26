@@ -22,7 +22,7 @@ import math
 import os
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any
@@ -36,6 +36,40 @@ logger = logging.getLogger(__name__)
 class LatencyParser:
     """A generic utility for parsing Conversational core span telemetry into
     DataFrames."""
+
+    @staticmethod
+    def calc_metric_stats(
+        values: Sequence[float | None],
+    ) -> dict[str, float | None]:
+        """Calculates count (n), avg, p50, p90, p95, and max for metric
+        values.
+        """
+        clean = [float(v) for v in values if v is not None]
+        if not clean:
+            return {
+                "n": 0,
+                "avg": None,
+                "p50": None,
+                "p90": None,
+                "p95": None,
+                "max": None,
+            }
+        clean.sort()
+        n = len(clean)
+        avg = sum(clean) / n
+
+        def _q(p: float) -> float:
+            idx = min(n - 1, math.floor(p * n))
+            return clean[idx]
+
+        return {
+            "n": n,
+            "avg": round(avg, 1),
+            "p50": round(_q(0.50), 1),
+            "p90": round(_q(0.90), 1),
+            "p95": round(_q(0.95), 1),
+            "max": round(clean[-1], 1),
+        }
 
     @staticmethod
     def fetch_conversation_traces(
@@ -1765,6 +1799,64 @@ class LatencyParser:
             99.0, max(0.0, (vad_end_rel_ms / total_timeline_ms) * 100.0)
         )
 
+        llm_calls_cnt = 0
+        llm_total_ms = 0.0
+        llm_calls_data: list[dict[str, Any]] = []
+        bm_loops_cnt = 0
+        bm_total_ms = 0.0
+        other_cb_ms = 0.0
+        tool_total_ms = 0.0
+        tools_data: list[dict[str, Any]] = []
+        first_tts_audio_ms = 0.0
+
+        for s in spans:
+            s_nm = s.get("name", "")
+            s_attrs = s.get("attrs", {})
+            s_dur = float(s.get("dur_ms", 0.0) or 0.0)
+
+            if s_nm == "LLM":
+                llm_calls_cnt += 1
+                llm_total_ms += s_dur
+                ttfc_v = float(
+                    s_attrs.get(
+                        "time to first chunk (ms)",
+                        s_attrs.get("time to first token (ms)", 0.0),
+                    )
+                    or 0.0
+                )
+                llm_calls_data.append({"dur_ms": s_dur, "ttfc_ms": ttfc_v})
+            elif s_nm == "Callback":
+                stage = str(s_attrs.get("stage", "") or "")
+                desc = str(s_attrs.get("description", "") or "")
+                if "BeforeModel" in stage or "before_model" in desc.lower():
+                    bm_loops_cnt += 1
+                    bm_total_ms += s_dur
+                else:
+                    other_cb_ms += s_dur
+            elif s_nm.startswith("TOOL:") or s_nm == "Tool":
+                tool_name = str(
+                    s_attrs.get("tool", s_nm.replace("TOOL:", "").strip()) or ""
+                )
+                tool_total_ms += s_dur
+                tools_data.append({"name": tool_name, "dur_ms": s_dur})
+            elif s_nm == "TTS":
+                ttfa_v = float(
+                    s_attrs.get("time to first audio (ms)", 0.0) or 0.0
+                )
+                if ttfa_v > 0 and first_tts_audio_ms == 0.0:
+                    first_tts_audio_ms = ttfa_v
+
+        turn_metrics_tuple = [
+            round(pl_ms, 1) if pl_ms is not None else None,
+            llm_calls_cnt,
+            round(llm_total_ms, 1),
+            bm_loops_cnt,
+            round(bm_total_ms, 1),
+            round(other_cb_ms, 1),
+            round(tool_total_ms, 1),
+            round(first_tts_audio_ms, 1) if first_tts_audio_ms > 0 else None,
+        ]
+
         return {
             "turn_index": turn_idx,
             "turn_num": turn_idx + 1,
@@ -1809,6 +1901,18 @@ class LatencyParser:
             "component_records": component_records,
             "tool_records": tool_records,
             "waterfall_spans": waterfall_spans,
+            "llm_calls_cnt": llm_calls_cnt,
+            "llm_total_ms": round(llm_total_ms, 1),
+            "llm_calls_data": llm_calls_data,
+            "before_model_loops_cnt": bm_loops_cnt,
+            "before_model_total_ms": round(bm_total_ms, 1),
+            "other_callback_ms": round(other_cb_ms, 1),
+            "tool_total_ms": round(tool_total_ms, 1),
+            "tools_data": tools_data,
+            "first_tts_audio_ms": (
+                round(first_tts_audio_ms, 1) if first_tts_audio_ms > 0 else None
+            ),
+            "turn_metrics_tuple": turn_metrics_tuple,
         }
 
     @staticmethod
@@ -1816,6 +1920,8 @@ class LatencyParser:
         conv_dict: dict[str, Any],
         session_id: str = "",
         conv_name: str = "",
+        eval_type: str = "",
+        modality: str = "",
         callback_catalog: dict[tuple[str, str], list[dict[str, str]]]
         | None = None,
     ) -> dict[str, Any] | None:
@@ -1863,9 +1969,58 @@ class LatencyParser:
             else 0.0
         )
 
+        lat_turns = [
+            t.get("turn_metrics_tuple")
+            for t in parsed_turns
+            if t.get("turn_metrics_tuple") is not None
+        ]
+        lat_llm_calls = [
+            c for t in parsed_turns for c in t.get("llm_calls_data", [])
+        ]
+        lat_tools = [
+            tool for t in parsed_turns for tool in t.get("tools_data", [])
+        ]
+
+        slowest_turn = None
+        max_pl = -1.0
+        for t in parsed_turns:
+            pl_v = t.get("pl_ms")
+            if pl_v is not None and pl_v > max_pl:
+                max_pl = pl_v
+                slowest_turn = t
+
+        slowest_turn_num = (
+            slowest_turn.get("turn_num", 1) if slowest_turn else 1
+        )
+        slowest_turn_ms = (
+            slowest_turn.get("pl_ms", 0.0) if slowest_turn else 0.0
+        )
+
+        slowest_breakdown = ""
+        if slowest_turn:
+            t_tup = slowest_turn.get("turn_metrics_tuple") or []
+            if len(t_tup) >= 7:
+                loops = int(t_tup[3] or 0)
+                bm_ms = round(float(t_tup[4] or 0.0))
+                llm_cnt = int(t_tup[1] or 0)
+                llm_ms = round(float(t_tup[2] or 0.0))
+                tl_ms = round(float(t_tup[6] or 0.0))
+                slowest_breakdown = (
+                    f"{loops} loops · BeforeModel {bm_ms:,} ms · "
+                    f"LLM {llm_cnt}× {llm_ms:,} ms · tools {tl_ms:,} ms"
+                )
+
         return {
             "session_id": session_id or str(conv_dict.get("session_id", "")),
             "conv_name": conv_name,
+            "eval_type": eval_type,
+            "modality": modality,
+            "slowest_turn_num": slowest_turn_num,
+            "slowest_turn_ms": slowest_turn_ms,
+            "slowest_turn_breakdown": slowest_breakdown,
+            "lat_turns": lat_turns,
+            "lat_llm_calls": lat_llm_calls,
+            "lat_tools": lat_tools,
             "total_turns": len(parsed_turns),
             "spoken_turns_count": len(spoken_turns),
             "audio_turns_count": len(user_turns),
@@ -2452,6 +2607,519 @@ class LatencyParser:
                 ),
             }
 
+        all_turn_tuples = [
+            t for c in valid_convs for t in c.get("lat_turns", [])
+        ]
+        all_llm_calls = [
+            call for c in valid_convs for call in c.get("lat_llm_calls", [])
+        ]
+        all_tool_calls = [
+            tool for c in valid_convs for tool in c.get("lat_tools", [])
+        ]
+
+        def _fmt_ms_val(v: float | None) -> str:
+            if v is None:
+                return "—"
+            if v >= 1000.0:
+                return f"{v / 1000.0:.2f} s"
+            return f"{round(v):,} ms"
+
+        pl_vals_kpi = [t[0] for t in all_turn_tuples if t[0] is not None]
+        pl_stats = LatencyParser.calc_metric_stats(pl_vals_kpi)
+        llm_ttfc_vals = [
+            c["ttfc_ms"]
+            for c in all_llm_calls
+            if c.get("ttfc_ms") and c["ttfc_ms"] > 0
+        ]
+        llm_ttfc_stats = LatencyParser.calc_metric_stats(llm_ttfc_vals)
+        llm_cnts = [t[1] for t in all_turn_tuples]
+        llm_cnt_stats = LatencyParser.calc_metric_stats(llm_cnts)
+        bm_cnts = [t[3] for t in all_turn_tuples]
+        bm_cnt_stats = LatencyParser.calc_metric_stats(bm_cnts)
+
+        p50_v = pl_stats["p50"]
+        p90_v = pl_stats["p90"]
+        p95_v = pl_stats["p95"]
+        max_v = pl_stats["max"]
+
+        p50_cls = (
+            "pass"
+            if (p50_v and p50_v <= 1500)
+            else (
+                "warn"
+                if (p50_v and p50_v <= 2500)
+                else ("fail" if p50_v else "")
+            )
+        )
+        p95_cls = (
+            "pass"
+            if (p95_v and p95_v <= 2500)
+            else (
+                "warn"
+                if (p95_v and p95_v <= 3500)
+                else ("fail" if p95_v else "")
+            )
+        )
+
+        kpi_tiles = [
+            {
+                "label": "Perceived p50",
+                "value": _fmt_ms_val(p50_v),
+                "meta": f"{pl_stats['n']:,} turns · Target < 1.5s",
+                "status_cls": p50_cls,
+            },
+            {
+                "label": "Perceived p90",
+                "value": _fmt_ms_val(p90_v),
+                "meta": f"{pl_stats['n']:,} turns · Target < 2.5s",
+                "status_cls": "",
+            },
+            {
+                "label": "Perceived p95",
+                "value": _fmt_ms_val(p95_v),
+                "meta": f"max {_fmt_ms_val(max_v)}",
+                "status_cls": p95_cls,
+            },
+            {
+                "label": "LLM first chunk p50",
+                "value": _fmt_ms_val(llm_ttfc_stats["p50"]),
+                "meta": (
+                    f"{llm_ttfc_stats['n']:,} LLM calls · "
+                    f"p90 {_fmt_ms_val(llm_ttfc_stats['p90'])}"
+                ),
+                "status_cls": "",
+            },
+            {
+                "label": "LLM calls / turn",
+                "value": (
+                    f"{llm_cnt_stats['avg']:.2f}"
+                    if llm_cnt_stats["avg"] is not None
+                    else "—"
+                ),
+                "meta": (
+                    f"p95 {llm_cnt_stats['p95'] or 0:.0f} · "
+                    f"p90 {llm_cnt_stats['p90'] or 0:.0f}"
+                ),
+                "status_cls": "",
+            },
+            {
+                "label": "Reasoning loops / turn",
+                "value": (
+                    f"{bm_cnt_stats['avg']:.2f}"
+                    if bm_cnt_stats["avg"] is not None
+                    else "—"
+                ),
+                "meta": (
+                    f"p95 {bm_cnt_stats['p95'] or 0:.0f} · BeforeModel steps"
+                ),
+                "status_cls": "",
+            },
+        ]
+
+        turn_map: dict[int, list[float]] = {}
+        turn_eval_map: dict[int, set[str]] = {}
+        for c in valid_convs:
+            c_id = c.get("session_id", "") or c.get("conv_name", "eval")
+            for t_idx, t in enumerate(c.get("turns", [])):
+                t_num = t_idx + 1
+                pl_v = t.get("pl_ms")
+                if t_num not in turn_map:
+                    turn_map[t_num] = []
+                    turn_eval_map[t_num] = set()
+                if pl_v is not None:
+                    turn_map[t_num].append(pl_v)
+                turn_eval_map[t_num].add(c_id)
+
+        turn_trend_buckets = []
+        for t_num in sorted(turn_map.keys()):
+            vals = turn_map[t_num]
+            st = LatencyParser.calc_metric_stats(vals)
+            turn_trend_buckets.append(
+                {
+                    "turn_num": t_num,
+                    "label": f"Turn {t_num}",
+                    "p50": st["p50"],
+                    "p90": st["p90"],
+                    "p95": st["p95"],
+                    "n": len(vals),
+                    "calls": len(turn_eval_map[t_num]),
+                }
+            )
+
+        voice_convs = [
+            c
+            for c in valid_convs
+            if "audio" in str(c.get("modality", "")).lower()
+            or "voice" in str(c.get("modality", "")).lower()
+        ]
+        chat_convs = [
+            c
+            for c in valid_convs
+            if "chat" in str(c.get("modality", "")).lower()
+            or "text" in str(c.get("modality", "")).lower()
+        ]
+
+        def _build_metrics_rows(
+            conv_list: list[dict[str, Any]],
+            include_voice_tts: bool = True,
+        ) -> list[dict[str, Any]]:
+            c_tuples = [t for c in conv_list for t in c.get("lat_turns", [])]
+            c_after_first = [
+                t for c in conv_list for t in c.get("lat_turns", [])[1:]
+            ]
+            c_llm = [
+                call for c in conv_list for call in c.get("lat_llm_calls", [])
+            ]
+
+            st_pl = LatencyParser.calc_metric_stats(
+                [t[0] for t in c_tuples if t[0] is not None]
+            )
+            st_pl_after_first = LatencyParser.calc_metric_stats(
+                [t[0] for t in c_after_first if t[0] is not None]
+            )
+            st_ttfc = LatencyParser.calc_metric_stats(
+                [
+                    c["ttfc_ms"]
+                    for c in c_llm
+                    if c.get("ttfc_ms") and c["ttfc_ms"] > 0
+                ]
+            )
+            st_llm_call = LatencyParser.calc_metric_stats(
+                [
+                    c["dur_ms"]
+                    for c in c_llm
+                    if c.get("dur_ms") is not None and c["dur_ms"] >= 0
+                ]
+            )
+            st_llm_turn = LatencyParser.calc_metric_stats(
+                [t[2] for t in c_tuples if t[1] and t[2] is not None]
+            )
+            st_bm_dur = LatencyParser.calc_metric_stats(
+                [t[4] for t in c_tuples if t[4] is not None]
+            )
+            st_tool = LatencyParser.calc_metric_stats(
+                [t[6] for t in c_tuples if t[6] is not None and t[6] > 0]
+                or [t[6] for t in c_tuples if t[6] is not None]
+            )
+            st_tts = LatencyParser.calc_metric_stats(
+                [t[7] for t in c_tuples if t[7] is not None and t[7] > 0]
+            )
+            st_bm_loops = LatencyParser.calc_metric_stats(
+                [t[3] for t in c_tuples if t[3] is not None]
+            )
+            st_llm_cnt = LatencyParser.calc_metric_stats(
+                [t[1] for t in c_tuples if t[1] is not None]
+            )
+
+            def _fmt_row(
+                lbl: str,
+                tgt: str,
+                st: dict[str, Any],
+                is_cnt: bool = False,
+                p95_crit: float | None = None,
+            ) -> dict[str, Any]:
+                fmt_fn = (
+                    (
+                        lambda v: (
+                            f"{int(v)}"
+                            if (v is not None and float(v).is_integer())
+                            else (f"{v:.2f}" if v is not None else "—")
+                        )
+                    )
+                    if is_cnt
+                    else _fmt_ms_val
+                )
+                p95_val = st.get("p95")
+                cls = (
+                    "fail"
+                    if (p95_crit and p95_val and p95_val > p95_crit)
+                    else ""
+                )
+                return {
+                    "metric": lbl,
+                    "target": tgt,
+                    "avg": fmt_fn(st.get("avg")),
+                    "p50": fmt_fn(st.get("p50")),
+                    "p90": fmt_fn(st.get("p90")),
+                    "p95": fmt_fn(p95_val),
+                    "max": fmt_fn(st.get("max")),
+                    "n": f"{st.get('n', 0):,}",
+                    "cls": cls,
+                }
+
+            rows = [
+                _fmt_row(
+                    "Perceived latency, all turns",
+                    "< 1,500 ms",
+                    st_pl,
+                    p95_crit=3000.0,
+                ),
+                _fmt_row(
+                    "Perceived latency, after the first turn",
+                    "< 1,500 ms",
+                    st_pl_after_first,
+                    p95_crit=3000.0,
+                ),
+                _fmt_row(
+                    "LLM time to first chunk",
+                    "< 800 ms",
+                    st_ttfc,
+                    p95_crit=1500.0,
+                ),
+                _fmt_row(
+                    "LLM call latency, per call",
+                    "< 1,200 ms",
+                    st_llm_call,
+                    p95_crit=2200.0,
+                ),
+                _fmt_row(
+                    "LLM total latency, per turn with an LLM call",
+                    "< 1,500 ms",
+                    st_llm_turn,
+                    p95_crit=2500.0,
+                ),
+                _fmt_row(
+                    "BeforeModel callback time, per turn",
+                    "< 300 ms",
+                    st_bm_dur,
+                    p95_crit=600.0,
+                ),
+                _fmt_row(
+                    "Tool time, per turn with a tool call",
+                    "< 500 ms",
+                    st_tool,
+                    p95_crit=1500.0,
+                ),
+            ]
+            if include_voice_tts:
+                rows.append(
+                    _fmt_row(
+                        "First TTS audio",
+                        "< 350 ms",
+                        st_tts,
+                        p95_crit=700.0,
+                    )
+                )
+            rows.extend(
+                [
+                    _fmt_row(
+                        "Reasoning loops per turn (BeforeModel steps)",
+                        "< 1.5",
+                        st_bm_loops,
+                        is_cnt=True,
+                    ),
+                    _fmt_row(
+                        "LLM calls per turn",
+                        "< 1.5",
+                        st_llm_cnt,
+                        is_cnt=True,
+                    ),
+                ]
+            )
+            return rows
+
+        metrics_tables = []
+        if voice_convs and chat_convs:
+            metrics_tables.append(
+                {
+                    "title": f"Voice · {len(voice_convs):,} evaluations",
+                    "rows": _build_metrics_rows(
+                        voice_convs, include_voice_tts=True
+                    ),
+                }
+            )
+            metrics_tables.append(
+                {
+                    "title": f"Chat · {len(chat_convs):,} evaluations",
+                    "rows": _build_metrics_rows(
+                        chat_convs, include_voice_tts=False
+                    ),
+                }
+            )
+        else:
+            metrics_tables.append(
+                {
+                    "title": "Latency metrics",
+                    "rows": _build_metrics_rows(
+                        valid_convs, include_voice_tts=bool(voice_convs)
+                    ),
+                }
+            )
+
+        avg_bm = (
+            (sum(t[4] for t in all_turn_tuples) / len(all_turn_tuples))
+            if all_turn_tuples
+            else 0.0
+        )
+        avg_llm = (
+            (sum(t[2] for t in all_turn_tuples) / len(all_turn_tuples))
+            if all_turn_tuples
+            else 0.0
+        )
+        avg_tool = (
+            (sum(t[6] for t in all_turn_tuples) / len(all_turn_tuples))
+            if all_turn_tuples
+            else 0.0
+        )
+        avg_other_cb = (
+            (sum(t[5] for t in all_turn_tuples) / len(all_turn_tuples))
+            if all_turn_tuples
+            else 0.0
+        )
+        voice_tuples = [
+            t for t in all_turn_tuples if t[7] is not None and t[7] > 0
+        ]
+        avg_tts = (
+            (sum(t[7] for t in voice_tuples) / len(voice_tuples))
+            if voice_tuples
+            else 0.0
+        )
+
+        ptot = avg_bm + avg_llm + avg_tool + avg_other_cb
+        pmax = max(1.0, avg_bm, avg_llm, avg_tool, avg_other_cb, avg_tts)
+
+        turn_parts = [
+            {
+                "label": "BeforeModel callbacks",
+                "dur_ms": round(avg_bm, 1),
+                "dur_fmt": _fmt_ms_val(avg_bm),
+                "pct_span_time": (
+                    f"{round((avg_bm / ptot) * 100.0):.0f}% of span time"
+                    if ptot
+                    else "0% of span time"
+                ),
+                "pct_width": max(0.5, (avg_bm / pmax) * 100.0),
+                "color_var": "--accent",
+            },
+            {
+                "label": "LLM calls",
+                "dur_ms": round(avg_llm, 1),
+                "dur_fmt": _fmt_ms_val(avg_llm),
+                "pct_span_time": (
+                    f"{round((avg_llm / ptot) * 100.0):.0f}% of span time"
+                    if ptot
+                    else "0% of span time"
+                ),
+                "pct_width": max(0.5, (avg_llm / pmax) * 100.0),
+                "color_var": "--s-oos",
+            },
+            {
+                "label": "Tool calls",
+                "dur_ms": round(avg_tool, 1),
+                "dur_fmt": _fmt_ms_val(avg_tool),
+                "pct_span_time": (
+                    f"{round((avg_tool / ptot) * 100.0):.0f}% of span time"
+                    if ptot
+                    else "0% of span time"
+                ),
+                "pct_width": max(0.5, (avg_tool / pmax) * 100.0),
+                "color_var": "--s-truck",
+            },
+            {
+                "label": "Other callbacks",
+                "dur_ms": round(avg_other_cb, 1),
+                "dur_fmt": _fmt_ms_val(avg_other_cb),
+                "pct_span_time": (
+                    f"{round((avg_other_cb / ptot) * 100.0):.0f}% of span time"
+                    if ptot
+                    else "0% of span time"
+                ),
+                "pct_width": max(0.5, (avg_other_cb / pmax) * 100.0),
+                "color_var": "--muted",
+            },
+        ]
+        if voice_convs or avg_tts > 0:
+            turn_parts.append(
+                {
+                    "label": "First TTS audio (voice)",
+                    "dur_ms": round(avg_tts, 1),
+                    "dur_fmt": _fmt_ms_val(avg_tts),
+                    "pct_span_time": "",
+                    "pct_width": max(0.5, (avg_tts / pmax) * 100.0),
+                    "color_var": "--s-self",
+                }
+            )
+
+        tool_durs_map: dict[str, list[float]] = {}
+        for t in all_tool_calls:
+            t_nm = t.get("name") or "unknown_tool"
+            tool_durs_map.setdefault(t_nm, []).append(t.get("dur_ms", 0.0))
+
+        total_all_tool_ms = max(
+            1.0, sum(sum(durs) for durs in tool_durs_map.values())
+        )
+        tool_rows = []
+        for t_nm, durs in tool_durs_map.items():
+            st = LatencyParser.calc_metric_stats(durs)
+            t_tot = sum(durs)
+            share_pct = round((t_tot / total_all_tool_ms) * 100.0, 1)
+            tool_rows.append(
+                {
+                    "name": t_nm,
+                    "calls": st["n"],
+                    "p50_ms": st["p50"],
+                    "p50_fmt": _fmt_ms_val(st["p50"]),
+                    "p95_ms": st["p95"],
+                    "p95_fmt": _fmt_ms_val(st["p95"]),
+                    "p95_critical": bool(st["p95"] and st["p95"] > 3000.0),
+                    "max_ms": st["max"],
+                    "max_fmt": _fmt_ms_val(st["max"]),
+                    "total_ms": t_tot,
+                    "share_pct": f"{share_pct:.1f}%",
+                }
+            )
+        tool_rows.sort(key=lambda x: x["total_ms"], reverse=True)
+        top_tools = tool_rows[:12]
+        overflow_tools = tool_rows[12:]
+        if overflow_tools:
+            rem_ms = sum(t["total_ms"] for t in overflow_tools)
+            rem_pct = round((rem_ms / total_all_tool_ms) * 100.0, 1)
+            overflow_summary = {
+                "remaining_count": len(overflow_tools),
+                "share_pct": f"{rem_pct:.1f}%",
+            }
+        else:
+            overflow_summary = None
+
+        slowest_candidates = []
+        for c in valid_convs:
+            if c.get("slowest_turn_ms") is not None:
+                median_st = LatencyParser.calc_metric_stats(
+                    [
+                        t["pl_ms"]
+                        for t in c.get("turns", [])
+                        if t.get("pl_ms") is not None
+                    ]
+                )
+                slowest_candidates.append(
+                    {
+                        "name": c.get("conv_name")
+                        or c.get("session_id", "eval"),
+                        "session_id": c.get("session_id", ""),
+                        "eval_type": c.get("eval_type", "sim"),
+                        "modality": c.get("modality", "voice"),
+                        "turns_count": len(c.get("turns", [])),
+                        "median_turn_ms": median_st["p50"],
+                        "median_turn_fmt": _fmt_ms_val(median_st["p50"]),
+                        "slowest_turn_num": c.get("slowest_turn_num", 1),
+                        "slowest_turn_ms": c.get("slowest_turn_ms", 0.0),
+                        "slowest_turn_fmt": _fmt_ms_val(
+                            c.get("slowest_turn_ms")
+                        ),
+                        "breakdown_str": c.get("slowest_turn_breakdown", ""),
+                    }
+                )
+        slowest_candidates.sort(
+            key=lambda x: x["slowest_turn_ms"] or 0.0, reverse=True
+        )
+        slowest_evals = slowest_candidates[:10]
+
+        modality_label = (
+            "voice and chat"
+            if (voice_convs and chat_convs)
+            else ("voice" if voice_convs else "chat")
+        )
+
         return {
             "conversations_count": len(valid_convs),
             "total_turns": len(all_turns),
@@ -2461,4 +3129,12 @@ class LatencyParser:
             "optimization_targets": optimization_targets,
             "callback_decomposition": callback_decomposition,
             "filler_table": filler_table,
+            "kpi_tiles": kpi_tiles,
+            "turn_trend_buckets": turn_trend_buckets,
+            "metrics_tables": metrics_tables,
+            "turn_parts": turn_parts,
+            "top_tools": top_tools,
+            "overflow_summary": overflow_summary,
+            "slowest_evals": slowest_evals,
+            "modality_label": modality_label,
         }

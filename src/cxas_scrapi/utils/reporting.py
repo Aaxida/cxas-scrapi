@@ -19,6 +19,7 @@ import contextlib
 import datetime
 import glob
 import json
+import math
 import os
 import re
 import typing
@@ -419,409 +420,231 @@ def _render_conv_latency_drawer(
     )
 
 
+def _prepare_trend_chart(
+    buckets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Calculate geometry and data points for dual-panel trend SVG chart."""
+    if not buckets or not any(b.get("n") for b in buckets):
+        return None
+    w = 760
+    h1 = 170
+    gap = 26
+    h2 = 44
+    pad_l = 48
+    pad_r = 64
+    pad_t = 12
+
+    top_p90 = max((float(b.get("p90") or 0.0)) for b in buckets)
+    top = max(1.0, math.ceil(top_p90 / 1000.0))
+    tick = 2.0 if top > 8 else (1.0 if top > 4 else 0.5)
+
+    bw = (w - pad_l - pad_r) / max(1, len(buckets))
+
+    def cx(i: int) -> float:
+        return pad_l + bw * (i + 0.5)
+
+    def y(v: float | None) -> float:
+        return pad_t + (1.0 - (float(v or 0.0) / (top * 1000.0))) * h1
+
+    nmax = max(int(b.get("n") or 1) for b in buckets)
+
+    def y2(v: int) -> float:
+        return pad_t + h1 + gap + h2 - (float(v) / float(nmax)) * h2
+
+    grid_lines = []
+    t_val = 0.0
+    while t_val <= top + 1e-6:
+        y_pos = round(y(t_val * 1000.0), 1)
+        grid_col = "var(--axis)" if t_val == 0 else "var(--grid)"
+        grid_lines.append(
+            {
+                "y": y_pos,
+                "x1": pad_l,
+                "x2": w - pad_r,
+                "text_x": pad_l - 8,
+                "text_y": round(y_pos + 4, 1),
+                "label": f"{t_val:.1g}s",
+                "stroke": grid_col,
+            }
+        )
+        t_val += tick
+
+    series = []
+    end_y: float | None = None
+    for key, col, label_name in [
+        ("p90", "var(--serious)", "p90"),
+        ("p50", "var(--accent)", "p50"),
+    ]:
+        d = ""
+        prev_ok = False
+        valid_indices: list[int] = []
+        dots = []
+        for i, b in enumerate(buckets):
+            v = b.get(key)
+            if v is None:
+                prev_ok = False
+                continue
+            valid_indices.append(i)
+            px = round(cx(i), 1)
+            py = round(y(float(v)), 1)
+            d += f"{'L' if prev_ok else 'M'}{px:.1f},{py:.1f}"
+            prev_ok = True
+            dots.append({"cx": px, "cy": py, "val": float(v)})
+        if d:
+            last_i = valid_indices[-1]
+            last_v = float(buckets[last_i][key])
+            ly = round(y(last_v) + 4, 1)
+            if (
+                label_name == "p50"
+                and end_y is not None
+                and abs(ly - end_y) < 14
+            ):
+                ly = round(end_y + 14, 1)
+            end_y = ly
+            series.append(
+                {
+                    "key": key,
+                    "label": label_name,
+                    "color": col,
+                    "d": d,
+                    "dots": dots,
+                    "last_x": round(cx(last_i) + 10, 1),
+                    "last_y": ly,
+                    "last_val_fmt": _fmt_ms(last_v),
+                }
+            )
+
+    bars = []
+    cw = min(24.0, bw * 0.62)
+    for i, b in enumerate(buckets):
+        n_val = int(b.get("n", 0))
+        yy = y2(n_val)
+        h_bar = pad_t + h1 + gap + h2 - yy
+        bars.append(
+            {
+                "x": round(cx(i) - cw / 2.0, 1),
+                "y": round(yy, 1),
+                "width": round(cw, 1),
+                "height": round(h_bar, 1),
+                "text_x": round(cx(i), 1),
+                "text_y": round(pad_t + h1 + gap + h2 + 16, 1),
+                "label": str(b.get("label", "")),
+            }
+        )
+
+    hits = []
+    for i, b in enumerate(buckets):
+        lbl = str(b.get("label", f"Turn {i + 1}"))
+        p50_s = _fmt_ms(b.get("p50"))
+        p90_s = _fmt_ms(b.get("p90"))
+        p95_s = _fmt_ms(b.get("p95"))
+        n_turns = int(b.get("n", 0))
+        n_calls = int(b.get("calls", 0))
+        tip_title = (
+            f"{lbl}&#10;p50: {p50_s}&#10;p90: {p90_s}&#10;p95: {p95_s}&#10;"
+            f"Turns: {n_turns}&#10;Evals: {n_calls}"
+        )
+        hits.append(
+            {
+                "turn_num": b.get("turn_num", i + 1),
+                "label": lbl,
+                "p50_s": p50_s,
+                "p90_s": p90_s,
+                "p95_s": p95_s,
+                "turns": n_turns,
+                "calls": n_calls,
+                "x": round(pad_l + bw * i, 1),
+                "y": pad_t,
+                "width": round(bw, 1),
+                "height": h1 + gap + h2,
+                "title": tip_title,
+            }
+        )
+
+    return {
+        "w": w,
+        "view_h": pad_t + h1 + gap + h2 + 24,
+        "pad_l": pad_l,
+        "turns_label_y": pad_t + h1 + gap - 8,
+        "nmax": nmax,
+        "nmax_y": round(y2(nmax) + 8, 1),
+        "grid_lines": grid_lines,
+        "series": series,
+        "bars": bars,
+        "hits": hits,
+    }
+
+
+def _get_combined_report_template() -> jinja2.Template:
+    """Load and return the Jinja2 template for combined eval reports."""
+    template_path = os.path.join(
+        os.path.dirname(__file__), "combined_report_template.html"
+    )
+    with _ORIG_OPEN(template_path, encoding="utf-8") as f:
+        template_content = f.read()
+    return jinja2.Template(template_content)
+
+
+def _get_combined_template_module(
+    extra_vars: dict[str, Any] | None = None,
+) -> Any:
+    """Instantiate template module with safe default context variables."""
+    template = _get_combined_report_template()
+    default_vars: dict[str, Any] = {
+        "pct": 0,
+        "passed": 0,
+        "total": 0,
+        "ts": "",
+        "unified": [],
+        "golden_results": [],
+        "sim_results": [],
+        "tool_results": [],
+        "callback_results": [],
+        "failure_groups": [],
+        "g_passed": 0,
+        "g_total": 0,
+        "g_duration": 0,
+        "s_passed": 0,
+        "s_total": 0,
+        "s_dur": 0,
+        "t_passed": 0,
+        "t_total": 0,
+        "c_passed": 0,
+        "c_total": 0,
+        "golden_modality": "text",
+        "sim_modality": "text",
+        "ces_base": "",
+        "sim_wall_clock_s": 0,
+        "failure_patterns_html": "",
+        "suite_latency_html": "",
+        "_fmt_duration": lambda s: f"{s:.1f}s",
+        "_fmt_ms": _fmt_ms,
+        "_pl_status_cls": _pl_status_cls,
+    }
+    if extra_vars:
+        default_vars.update(extra_vars)
+    return template.make_module(default_vars)
+
+
+def _render_trend_svg(buckets: list[dict[str, Any]]) -> str:
+    """Render dual-panel SVG chart showing p50/p90 latency trend and turn
+    volume.
+    """
+    chart = _prepare_trend_chart(buckets)
+    mod = _get_combined_template_module()
+    return str(mod.render_trend_svg(chart))
+
+
 def _render_suite_latency_drawer(suite_pl: dict[str, Any] | None) -> str:
     """Render Suite-Level Perceived Latency & Bottleneck Analysis drawer."""
     if not isinstance(suite_pl, dict) or not suite_pl.get("primary"):
         return ""
-    prim = suite_pl["primary"]
-    slices = suite_pl.get("slices", {})
-    active_key = suite_pl.get("primary_slice_key", "user_turns")
-
-    p50_cls = _pl_status_cls(prim.get("p50_ms"))
-    p90_cls = _pl_status_cls(prim.get("p90_ms"))
-
-    slice_btns_html = ""
-    slice_panels_html = ""
-    slice_order = [
-        ("user_turns", "User Turns"),
-        ("event_turns", "Event / System Turns"),
-        ("all_turns", "All Turns"),
-    ]
-    for skey, s_default_label in slice_order:
-        sdata = slices.get(skey)
-        if not sdata or sdata.get("total_turns", 0) == 0:
-            continue
-        is_active = skey == active_key
-        btn_cls = "pl-slice-btn active" if is_active else "pl-slice-btn"
-        disp = "block" if is_active else "none"
-        spoken_cnt = sdata.get("spoken_count", 0)
-        silent_cnt = sdata.get("silent_count", 0)
-        cnt_lbl = (
-            f"{spoken_cnt} spoken, {silent_cnt} silent"
-            if silent_cnt > 0
-            else f"{spoken_cnt}"
-        )
-        slice_btns_html += (
-            f'<button type="button" class="{btn_cls}" id="pl-btn-{skey}" '
-            f"onclick=\"switchPlSlice('{skey}')\">"
-            f"{_escape(s_default_label)} ({cnt_lbl})</button>\n"
-        )
-
-        st = sdata.get("stack", {})
-        slo_under_2s = round(100.0 - float(sdata.get("over_2s_pct", 0.0)), 1)
-        slo_cls = (
-            "pass"
-            if slo_under_2s >= 80
-            else ("warn" if slo_under_2s >= 50 else "fail")
-        )
-
-        avg_c = _pl_status_cls(sdata.get("avg_ms"))
-        p50_c = _pl_status_cls(sdata.get("p50_ms"))
-        p90_c = _pl_status_cls(sdata.get("p90_ms"))
-        avg_s = _fmt_ms(sdata.get("avg_ms"))
-        unm_s = _fmt_ms(sdata.get("unmasked_avg_ms"))
-        p50_s = _fmt_ms(sdata.get("p50_ms"))
-        p90_s = _fmt_ms(sdata.get("p90_ms"))
-        max_s = _fmt_ms(sdata.get("max_ms"))
-        u1_pct = sdata.get("under_1s_pct", 0)
-        o3_pct = sdata.get("over_3s_pct", 0)
-        f_cnt = sdata.get("filler_masked_count", 0)
-        f_sav = _fmt_ms(sdata.get("filler_saved_avg_ms", 0))
-        s_lbl = _escape(sdata.get("label", ""))
-
-        cb_w = max(0.0, st.get("callback_pct", 0))
-        cb_m = _fmt_ms(st.get("callback_ms", 0))
-        cb_p = st.get("callback_pct", 0)
-
-        tl_w = max(0.0, st.get("tool_pct", 0))
-        tl_m = _fmt_ms(st.get("tool_ms", 0))
-        tl_p = st.get("tool_pct", 0)
-
-        lm_w = max(0.0, st.get("llm_ttfc_pct", 0))
-        lm_m = _fmt_ms(st.get("llm_ttfc_ms", 0))
-        lm_p = st.get("llm_ttfc_pct", 0)
-
-        tt_w = max(0.0, st.get("tts_pct", 0))
-        tt_m = _fmt_ms(st.get("tts_ms", 0))
-        tt_p = st.get("tts_pct", 0)
-
-        ov_w = max(0.0, st.get("overhead_pct", 0))
-        ov_m = _fmt_ms(st.get("overhead_ms", 0))
-        ov_p = st.get("overhead_pct", 0)
-
-        slice_panels_html += (
-            f'<div class="pl-slice-panel" id="pl-slice-{skey}" '
-            f'style="display:{disp};">\n'
-            '  <div class="pl-overview-card">\n'
-            '    <div class="pl-kpi-strip">\n'
-            '      <div class="pl-kpi-item">'
-            '<span class="kpi-label">Mean PL</span> '
-            f'<b class="{avg_c}">{avg_s}</b> '
-            f'<span class="meta">(unmasked {unm_s})</span></div>\n'
-            '      <div class="pl-kpi-item">'
-            '<span class="kpi-label">p50</span> '
-            f'<b class="{p50_c}">{p50_s}</b> '
-            f'<span class="meta">(&lt;1s: {u1_pct:.0f}%)</span></div>\n'
-            '      <div class="pl-kpi-item">'
-            '<span class="kpi-label">p90 / Max</span> '
-            f'<b class="{p90_c}">{p90_s}</b> '
-            f'<span class="meta">/ {max_s}</span></div>\n'
-            '      <div class="pl-kpi-item">'
-            '<span class="kpi-label">&le;2.0s SLO</span> '
-            f'<b class="{slo_cls}">{slo_under_2s:.1f}%</b> '
-            f'<span class="meta">(&gt;3s: {o3_pct:.0f}%)</span></div>\n'
-            '      <div class="pl-kpi-item">'
-            '<span class="kpi-label">Filler Masked</span> '
-            f'<b class="pass">{f_cnt} turns</b> '
-            f'<span class="meta">(saved {f_sav})</span></div>\n'
-            "    </div>\n"
-            '    <div class="pl-stack-header">'
-            f"Pre-Speech Critical Path ({avg_s} Mean on {s_lbl})</div>\n"
-            '    <div class="pl-stack-bar">\n'
-            f'      <div class="pl-seg-cb" style="width:{cb_w}%" '
-            f'title="Callbacks: {cb_m} ({cb_p:.1f}%)"></div>\n'
-            f'      <div class="pl-seg-tool" style="width:{tl_w}%" '
-            f'title="Tools / APIs: {tl_m} ({tl_p:.1f}%)"></div>\n'
-            f'      <div class="pl-seg-sllm" style="width:{lm_w}%" '
-            f'title="LLM: {lm_m} ({lm_p:.1f}%)"></div>\n'
-            f'      <div class="pl-seg-ttfa" style="width:{tt_w}%" '
-            f'title="TTS / Audio: {tt_m} ({tt_p:.1f}%)"></div>\n'
-            f'      <div class="pl-seg-gap" style="width:{ov_w}%" '
-            f'title="Gap / Overhead: {ov_m} ({ov_p:.1f}%)"></div>\n'
-            "    </div>\n"
-            '    <div class="pl-stack-legend">\n'
-            '      <span class="pl-legend-item">'
-            '<span class="pl-legend-dot cb"></span>'
-            f'Callbacks <b>{cb_m}</b> <span class="meta">({cb_p:.0f}%)</span>'
-            "</span>\n"
-            '      <span class="pl-legend-item">'
-            '<span class="pl-legend-dot tool"></span>'
-            f"Tools / APIs <b>{tl_m}</b> "
-            f'<span class="meta">({tl_p:.0f}%)</span>'
-            "</span>\n"
-            '      <span class="pl-legend-item">'
-            '<span class="pl-legend-dot sllm"></span>'
-            f'LLM <b>{lm_m}</b> <span class="meta">({lm_p:.0f}%)</span>'
-            "</span>\n"
-            '      <span class="pl-legend-item">'
-            '<span class="pl-legend-dot ttfa"></span>'
-            f'TTS <b>{tt_m}</b> <span class="meta">({tt_p:.0f}%)</span>'
-            "</span>\n"
-            '      <span class="pl-legend-item">'
-            '<span class="pl-legend-dot gap"></span>'
-            "Gap / Overhead "
-            f'<b>{ov_m}</b> <span class="meta">({ov_p:.0f}%)</span>'
-            "</span>\n"
-            "    </div>\n"
-            "  </div>\n"
-            "</div>\n"
-        )
-
-    # Table A: Pre-Speech Component Breakdown & Signals
-    table_a_rows = ""
-    for row in suite_pl.get("optimization_targets", [])[:10]:
-        type_badge = {
-            "LLM": "sim",
-            "Tool / API": "tool",
-            "Callback": "callback",
-            "Guardrail": "golden",
-        }.get(row.get("type", ""), "neutral")
-        p90_c = _pl_status_cls(row.get("p90_ms"))
-        share_pct = float(row.get("share_of_pl_pct", 0.0) or 0.0)
-        share_cls = (
-            "fail"
-            if share_pct >= 15.0
-            else ("warn" if share_pct >= 5.0 else "")
-        )
-        cpt = float(row.get("calls_per_turn", 0.0) or 0.0)
-        r_type = _escape(row.get("type", ""))
-        r_agent = _escape(row.get("agent", ""))
-        r_imp = _fmt_ms(row.get("avg_pl_impact_ms"))
-        r_obs = _escape(
-            row.get("observation", row.get("recommendation", "")) or ""
-        )
-
-        sub_cb_html = ""
-        sub_cbs = row.get("sub_callbacks") or []
-        if sub_cbs:
-            items_html = ""
-            for sc in sub_cbs:
-                sc_seq = sc.get("seq", 1)
-                sc_nm = _escape(sc.get("cb_name", "callback"))
-                sc_avg = _fmt_ms(sc.get("avg_ms", 0))
-                sc_p90 = _fmt_ms(sc.get("p90_ms", 0))
-                sc_cnt = sc.get("calls", 0)
-                sc_cts = sc.get("child_tools") or []
-                sc_has_det = bool(
-                    sc.get("has_detailed_latency")
-                    or sc.get("avg_code_ms", 0) > 0
-                    or sc.get("avg_sandbox_ms", 0) > 0
-                )
-                if sc_has_det:
-                    tot_r = round(float(sc.get("avg_ms", 0)))
-                    code_r = round(float(sc.get("avg_code_ms", 0)))
-                    wait_r = round(float(sc.get("avg_ext_wait_ms", 0)))
-                    sbx_r = max(0, tot_r - code_r - wait_r)
-                    sc_bd = [f"code {code_r}ms"]
-                    if wait_r > 0:
-                        sc_bd.append(f"ext_wait {wait_r}ms")
-                    sc_bd.append(f"sandbox {sbx_r}ms")
-                    bd_html = (
-                        f' <span class="meta">({" + ".join(sc_bd)})</span>'
-                    )
-                else:
-                    bd_html = ""
-                if sc_cts:
-                    ct_str = ", ".join(
-                        f"{_escape(ct['name'])} ({round(ct['avg_ms'])}ms)"
-                        for ct in sc_cts[:3]
-                    )
-                    if len(sc_cts) > 3:
-                        ct_str += f", +{len(sc_cts) - 3} more"
-                    ct_html = f' · <span class="meta">&rarr; {ct_str}</span>'
-                else:
-                    ct_html = ""
-                items_html += (
-                    '<div class="cb-sub-item">'
-                    f'<span class="cb-seq-badge">#{sc_seq}</span> '
-                    f"<code>{sc_nm}</code> — avg <b>{sc_avg}</b>{bd_html}, "
-                    f'p90 <b>{sc_p90}</b> <span class="meta">'
-                    f"({sc_cnt} calls)</span>{ct_html}</div>\n"
-                )
-            cb_cnt_lbl = (
-                "1 callback"
-                if len(sub_cbs) == 1
-                else f"{len(sub_cbs)} callbacks in order"
-            )
-            sub_cb_html = (
-                '<details class="cb-sub-details">'
-                f'<summary><span class="pl-arrow">&#9654;</span>'
-                f"{cb_cnt_lbl}</summary>"
-                f'<div class="cb-sub-list">{items_html}</div>'
-                "</details>"
-            )
-
-        table_a_rows += (
-            "<tr>"
-            f"<td><b><code>{_escape(row.get('component', ''))}</code></b> "
-            f'<span class="badge {type_badge}">{r_type}</span>'
-            f'<br><span class="meta">Agent: {r_agent}</span>'
-            f"{sub_cb_html}</td>"
-            f"<td>{row.get('calls', 0)} ({cpt:.2g}&times;/turn)</td>"
-            f"<td><b>{_fmt_ms(row.get('avg_ms'))}</b></td>"
-            f"<td>{_fmt_ms(row.get('p50_ms'))}</td>"
-            f'<td class="{p90_c}"><b>{_fmt_ms(row.get("p90_ms"))}</b></td>'
-            f'<td class="{share_cls}"><b>{share_pct:.1f}%</b> '
-            f"({r_imp}/turn)</td>"
-            f'<td><span class="meta">{r_obs}</span></td>'
-            "</tr>\n"
-        )
-
-    cb_decomp = suite_pl.get("callback_decomposition")
-    cb_decomp_html = ""
-    if isinstance(cb_decomp, dict) and cb_decomp.get("total_calls", 0) > 0:
-        tot_turn_s = _fmt_ms(cb_decomp.get("avg_total_per_turn_ms", 0))
-        cpt_val = float(cb_decomp.get("calls_per_turn", 0.0) or 0.0)
-        tot_calls_val = int(cb_decomp.get("total_calls", 0) or 0)
-        c_ms = _fmt_ms(cb_decomp.get("avg_code_per_turn_ms", 0))
-        c_pct = float(cb_decomp.get("code_pct", 0.0) or 0.0)
-        w_ms = _fmt_ms(cb_decomp.get("avg_ext_wait_per_turn_ms", 0))
-        w_pct = float(cb_decomp.get("ext_wait_pct", 0.0) or 0.0)
-        s_ms = _fmt_ms(cb_decomp.get("avg_sandbox_per_turn_ms", 0))
-        s_pct = float(cb_decomp.get("sandbox_pct", 0.0) or 0.0)
-        s_per_call = _fmt_ms(cb_decomp.get("avg_sandbox_per_call_ms", 0))
-        ext_bar_seg = (
-            f'      <div class="pl-seg-tool" style="width:{max(0.0, w_pct)}%" '
-            f'title="External Tool Wait: {w_ms}/turn ({w_pct:.1f}%)"></div>\n'
-            if w_pct > 0
-            else ""
-        )
-        cb_decomp_html = (
-            '    <div class="pl-overview-card" style="margin-top:8px;">\n'
-            '      <div class="pl-stack-header">\n'
-            "        <span><b>📦 Callback Time Decomposition</b> "
-            '<span class="meta">— Why callback span duration exceeds pure '
-            "Python <code>code</code> time</span></span>\n"
-            f'        <span class="meta">Avg <b>{tot_turn_s}/turn</b> across '
-            f"{cpt_val:.2g} callbacks/turn ({tot_calls_val:,} total calls)"
-            "</span>\n"
-            "      </div>\n"
-            '      <div class="pl-stack-bar">\n'
-            f'        <div class="pl-seg-cb" style="width:{max(0.0, c_pct)}%" '
-            f'title="Pure Python Code: {c_ms}/turn ({c_pct:.1f}%)"></div>\n'
-            f"{ext_bar_seg}"
-            f'        <div class="pl-seg-gap" style="width:{max(0.0, s_pct)}%" '
-            'title="Sandbox &amp; State IPC Overhead: '
-            f'{s_ms}/turn ({s_pct:.1f}%)"></div>\n'
-            "      </div>\n"
-            '      <div style="display:grid;grid-template-columns:'
-            "repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:6px;"
-            'font-size:0.78em;">\n'
-            f'        <div><span class="badge callback">code</span> '
-            f"<b>{c_ms}/turn ({c_pct:.0f}%)</b>: Pure Python execution inside "
-            'the callback sandbox <span class="meta">(<code>total code '
-            "execution latency - waiting for external calls</code>)"
-            "</span>.</div>\n"
-            f'        <div><span class="badge tool">ext_wait</span> '
-            f"<b>{w_ms}/turn ({w_pct:.0f}%)</b>: Time paused inside the "
-            "callback awaiting synchronous tool / OpenAPI "
-            'calls <span class="meta">(<code>waiting for external calls'
-            "</code>)</span>.</div>\n"
-            f'        <div><span class="badge neutral">sandbox</span> '
-            f"<b>{s_ms}/turn ({s_pct:.0f}%, ~{s_per_call}/call)</b>: "
-            "Per-callback sandbox IPC, <code>session.state</code> "
-            "serialization/diffing &amp; sandbox init "
-            '<span class="meta">(<code>span_duration - code - ext_wait'
-            "</code>)</span>.</div>\n"
-            "      </div>\n"
-            "    </div>\n"
-        )
-
-    # Table B: Pre-Speech Tool Masking & Dead-Air Signals
-    table_b_rows = ""
-    for frow in suite_pl.get("filler_table", []):
-        s_cls = frow.get("status_cls", "neutral")
-        default_badge = (
-            f"{frow.get('status', '')} "
-            f"({frow.get('masked_calls', 0)}/{frow.get('calls', 0)} Masked)"
-        )
-        badge_lbl = frow.get("badge_label", default_badge)
-        if (
-            frow.get("masked_calls", 0) > 0
-            and frow.get("unmasked_calls", 0) == 0
-        ):
-            sav_s = _fmt_ms(frow.get("net_saved_ms"))
-            dead_air_html = (
-                f'<b class="pass">0 ms</b> '
-                f'<span class="meta">(Masked · Saved {sav_s})</span>'
-            )
-        elif frow.get("pl_unmasked_ms") is not None:
-            u_cls = _pl_status_cls(frow.get("pl_unmasked_ms"))
-            unm_pl = _fmt_ms(frow.get("pl_unmasked_ms"))
-            dead_air_html = (
-                f'<b class="{u_cls}">{unm_pl} PL</b> '
-                '<span class="meta">(No filler)</span>'
-            )
-        else:
-            dead_air_html = '<span class="meta">0 ms (Post-speech)</span>'
-
-        f_agent = _escape(frow.get("agent", ""))
-        f_avg = _fmt_ms(frow.get("avg_ms"))
-        f_p90 = _fmt_ms(frow.get("p90_ms"))
-        f_obs = _escape(frow.get("observation", frow.get("action", "")) or "")
-        table_b_rows += (
-            "<tr>"
-            f"<td><b><code>{_escape(frow.get('tool_name', ''))}</code></b>"
-            f' <span class="meta">({f_agent})</span></td>'
-            f"<td>{f_avg} / {f_p90}</td>"
-            f'<td><span class="badge {s_cls}">{_escape(badge_lbl)}</span></td>'
-            f"<td>{dead_air_html}</td>"
-            f'<td><span class="meta">{f_obs}</span></td>'
-            "</tr>\n"
-        )
-
-    filler_section_html = ""
-    if table_b_rows:
-        filler_section_html = (
-            "<h3>🗣️ Table B: Pre-Speech Tool Masking &amp; "
-            "Dead-Air Signals</h3>\n"
-            "<table>\n"
-            "<tr><th>Operation / Tool</th><th>Mean / p90 Dur</th>"
-            "<th>Unmasked Rate</th><th>Post-Filler Dead Air</th>"
-            "<th>Observation</th></tr>\n"
-            f"{table_b_rows}"
-            "</table>\n"
-        )
-
-    p50_m = _fmt_ms(prim.get("p50_ms"))
-    p90_m = _fmt_ms(prim.get("p90_ms"))
-    avg_m = _fmt_ms(prim.get("avg_ms"))
-    return (
-        '<details class="pl-suite-details latency-drawer" '
-        'id="section-latency">\n'
-        "  <summary>\n"
-        '    <span><span class="pl-arrow">&#9654;</span>⏱ '
-        "<b>Perceived Latency &amp; Bottleneck Analysis</b> "
-        '<span class="meta">(Click to expand pre-speech breakdown, '
-        "component observations &amp; filler signals)</span></span>\n"
-        "    <span>\n"
-        f'      <span class="badge {p50_cls}">p50: {p50_m}</span>\n'
-        f'      <span class="badge {p90_cls}">p90: {p90_m}</span>\n'
-        f'      <span class="badge tool">Mean: {avg_m}</span>\n'
-        "    </span>\n"
-        "  </summary>\n"
-        '  <div style="margin-top:10px;padding-top:8px;'
-        'border-top:1px solid var(--border-subtle);">\n'
-        '    <div style="display:flex;justify-content:space-between;'
-        'align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;">\n'
-        '      <span class="meta">Clock: <code>VAD.endTime</code> '
-        "&rarr; First Audio (<code>startTime + TTFA</code>)</span>\n"
-        '      <div style="display:flex;gap:6px;flex-wrap:wrap;">'
-        f"{slice_btns_html}</div>\n"
-        "    </div>\n"
-        f"    {slice_panels_html}"
-        "    <h3>🔧 Table A: Pre-Speech Component Breakdown &amp; Signals "
-        "(Critical Path)</h3>\n"
-        "    <table>\n"
-        "      <tr><th>Component / Stage</th><th>Calls (Calls/Turn)</th>"
-        "<th>Mean</th><th>p50</th><th>p90</th><th>Share of Suite PL</th>"
-        "<th>Observation</th></tr>\n"
-        f"      {table_a_rows}"
-        "    </table>\n"
-        f"{cb_decomp_html}"
-        f"    {filler_section_html}"
-        "  </div>\n"
-        "</details>\n"
+    trend_chart = _prepare_trend_chart(suite_pl.get("turn_trend_buckets", []))
+    mod = _get_combined_template_module(
+        {"_fmt_ms": _fmt_ms, "_pl_status_cls": _pl_status_cls}
+    )
+    return str(
+        mod.render_suite_latency(suite_pl, trend_chart, _fmt_ms, _pl_status_cls)
     )
 
 
@@ -917,6 +740,8 @@ def _attach_perceived_latency(
     app_name: str = "",
     output_path: str = "",
     traces_dir: str | None = None,
+    eval_type: str = "",
+    modality: str = "",
 ) -> list[dict[str, Any]]:
     """Resolve traces and attach latency fields to each result dict."""
     if not results_list:
@@ -973,10 +798,14 @@ def _attach_perceived_latency(
         )
         if not conv_dict:
             continue
+        r_eval_type = str(r.get("type", "") or eval_type or "")
+        r_modality = str(r.get("modality", "") or modality or "")
         conv_pl = LatencyParser.analyze_conversation_perceived_latency(
             conv_dict,
             session_id=str(r.get("session_id", "") or ""),
             conv_name=str(r.get("name", "") or ""),
+            eval_type=r_eval_type,
+            modality=r_modality,
             callback_catalog=callback_catalog,
         )
         if conv_pl:
@@ -1966,9 +1795,6 @@ def generate_combined_html_report(
         if conv_analyses
         else None
     )
-    suite_latency_html = (
-        _render_suite_latency_drawer(suite_pl) if suite_pl else ""
-    )
 
     # Process traces for simulation results to simplify template
     if sim_results:
@@ -2093,15 +1919,15 @@ def generate_combined_html_report(
         failure_groups=failure_groups
     )
     failure_patterns_html = f_patterns.render()
-    template_path = os.path.join(
-        os.path.dirname(__file__), "combined_report_template.html"
-    )
-    with _ORIG_OPEN(template_path) as f:
-        template_content = f.read()
-    template = jinja2.Template(template_content)
+    template = _get_combined_report_template()
     html = template.render(
         failure_patterns_html=failure_patterns_html,
-        suite_latency_html=suite_latency_html,
+        suite_pl=suite_pl,
+        trend_chart=_prepare_trend_chart(suite_pl.get("turn_trend_buckets", []))
+        if suite_pl
+        else None,
+        _fmt_ms=_fmt_ms,
+        _pl_status_cls=_pl_status_cls,
         ts=ts,
         pct=pct,
         passed=passed,
