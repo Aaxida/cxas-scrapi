@@ -35,6 +35,10 @@ AUDIO_SAMPLE_RATE_HZ = 16000
 AUDIO_CHANNELS = 1
 AUDIO_SAMPLE_WIDTH = 2
 
+DEFAULT_TTS_LANGUAGE_CODE = "en-US"
+DEFAULT_TTS_VOICE_NAME = "Aoede"
+DEFAULT_TTS_MODEL_NAME = "gemini-3.8-flash-lite-tts"
+
 
 class AudioTransformer:
     _client = None
@@ -69,14 +73,20 @@ class AudioTransformer:
         client = AudioTransformer._client
         synthesis_input = texttospeech.SynthesisInput(text=text)
         voice_config = voice_config or {}
-        language_code = voice_config.get("language_code", "en-US")
-        voice_name = (
-            voice_config.get("voice_name") or f"{language_code}-Standard-A"
+        language_code = (
+            voice_config.get("language_code") or DEFAULT_TTS_LANGUAGE_CODE
         )
+        voice_name = voice_config.get("voice_name") or DEFAULT_TTS_VOICE_NAME
+        model_name = voice_config.get("model_name", DEFAULT_TTS_MODEL_NAME)
 
-        voice = texttospeech.VoiceSelectionParams(
-            language_code=language_code, name=voice_name
-        )
+        voice_kwargs: dict[str, Any] = {
+            "language_code": language_code,
+            "name": voice_name,
+        }
+        if model_name:
+            voice_kwargs["model_name"] = model_name
+
+        voice = texttospeech.VoiceSelectionParams(**voice_kwargs)
         audio_config = texttospeech.AudioConfig(
             audio_encoding=texttospeech.AudioEncoding.LINEAR16,
             sample_rate_hertz=16000,

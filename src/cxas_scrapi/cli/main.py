@@ -1809,14 +1809,14 @@ def get_parser() -> argparse.ArgumentParser:
         "--sim-user-model",
         help=(
             "Gemini model name to use for the simulated user "
-            "(default: gemini-3.1-flash-lite)."
+            "(default: gemini-3.5-flash-lite)."
         ),
     )
     parser_report.add_argument(
         "--eval-model",
         help=(
             "Gemini model name to use for evaluating expectations "
-            "(default: gemini-3.1-flash-lite)."
+            "(default: gemini-3.5-flash-lite)."
         ),
     )
     parser_report.add_argument(
