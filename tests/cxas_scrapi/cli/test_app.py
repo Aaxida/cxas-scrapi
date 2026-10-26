@@ -739,7 +739,7 @@ def test_app_lint_list_rules(capsys: typing.Any) -> None:
 
     assert excinfo.value.code == 0
     captured = capsys.readouterr()
-    assert "I001" in captured.out
+    assert "I008" in captured.out
     assert "V001" in captured.out
     assert "Available Rules" in captured.out
 
@@ -779,7 +779,9 @@ def test_app_lint_with_errors(capsys: typing.Any, tmp_path: typing.Any) -> None:
     (tmp_path / "agents").mkdir()
     agent_dir = tmp_path / "agents" / "root_agent"
     agent_dir.mkdir()
-    (agent_dir / "instruction.txt").write_text("No XML tags here.")
+    (agent_dir / "instruction.txt").write_text(
+        "Transfer to {@AGENT: nonexistent}."
+    )
     (agent_dir / "root_agent.json").write_text(
         '{"displayName": "root_agent", "tools": ["end_session"]}'
     )
@@ -862,7 +864,7 @@ def test_app_lint_only_filter(capsys: typing.Any, tmp_path: typing.Any) -> None:
 
 def test_app_lint_rule_filter(capsys: typing.Any, tmp_path: typing.Any) -> None:
     _make_lint_app(tmp_path)
-    args = _lint_args(tmp_path, json_output=True, rule="I001")
+    args = _lint_args(tmp_path, json_output=True, rule="I008")
 
     with (
         mock.patch("cxas_scrapi.utils.lint_rules.schema.json_format.ParseDict"),
@@ -876,8 +878,8 @@ def test_app_lint_rule_filter(capsys: typing.Any, tmp_path: typing.Any) -> None:
 
     results = json.loads(captured.out)
     for r in results:
-        assert r["rule_id"] == "I001", (
-            f"Expected only I001 with --rule I001, got {r['rule_id']}"
+        assert r["rule_id"] == "I008", (
+            f"Expected only I008 with --rule I008, got {r['rule_id']}"
         )
 
 
@@ -894,7 +896,7 @@ def test_app_lint_list_rules_with_model(capsys: typing.Any) -> None:
     assert "A007" in captured.out
     assert "Available Rules" in captured.out
     # Agnostic rules should not be listed when model_only=True
-    assert "I001" not in captured.out
+    assert "I008" not in captured.out
 
 
 def test_app_lint_model_only(capsys: typing.Any, tmp_path: typing.Any) -> None:
@@ -920,7 +922,7 @@ def test_app_lint_model_only(capsys: typing.Any, tmp_path: typing.Any) -> None:
     rule_ids = {r["rule_id"] for r in results}
     assert "A007" in rule_ids
     # Model-agnostic rules should be excluded
-    assert "I001" not in rule_ids
+    assert "I008" not in rule_ids
     assert "A001" not in rule_ids
 
 
