@@ -129,6 +129,16 @@ class ParsedSessionResponse:
         # Extract output list
         if hasattr(response, "outputs"):
             self.outputs = getattr(response, "outputs", []) or []
+        elif isinstance(response, dict):
+            if "outputs" in response:
+                self.outputs = response["outputs"] or []
+            elif "session_output" in response or "sessionOutput" in response:
+                self.outputs = [
+                    response.get("session_output")
+                    or response.get("sessionOutput")
+                ]
+            else:
+                self.outputs = [response]
         elif isinstance(response, list):
             self.outputs = response
         elif hasattr(response, "session_output"):  # BidiSessionServerMessage
@@ -148,6 +158,26 @@ class ParsedSessionResponse:
         self.detailed_trace: list[str] = []
         self.root_spans: list[dict[str, Any]] = []
         self.root_span: dict[str, Any] | None = None
+
+        from cxas_scrapi.core.sessions import (  # noqa: PLC0415
+            BargeInMetadata,
+        )
+
+        meta = (
+            getattr(response, "barge_in_metadata", None)
+            if not isinstance(response, dict)
+            else response.get("barge_in_metadata")
+        )
+        if isinstance(meta, BargeInMetadata):
+            self.barge_in_metadata = meta
+        else:
+            self.barge_in_metadata = None
+        self.interrupted = bool(
+            getattr(self.barge_in_metadata, "interrupted", False)
+        )
+        self.vad_barge_in = False
+        self.vad_skip_reason: str | None = None
+        self.barge_in_context: str | None = None
 
         self._parse()
 
@@ -191,6 +221,26 @@ class ParsedSessionResponse:
                 return res
         return None
 
+    def _search_vad_spans(self, span_dict: dict[str, Any]) -> None:
+        """Recursively inspects spans for VAD barge-in signals."""
+        if not isinstance(span_dict, dict):
+            return
+
+        name = span_dict.get("name", "")
+        attrs = span_dict.get("attributes", {})
+        if name == "VAD":
+            barge_in_attr = attrs.get("barge-in")
+            if barge_in_attr is True or str(barge_in_attr).lower() == "true":
+                self.vad_barge_in = True
+            if "skip" in attrs:
+                self.vad_skip_reason = str(attrs["skip"])
+
+        child_spans = span_dict.get(
+            "childSpans", span_dict.get("child_spans", [])
+        )
+        for child in child_spans:
+            self._search_vad_spans(child)
+
     def _parse_guardrails(self, diagnostic_info: Any) -> None:
         """Extracts root_span and guardrail triggers from diagnostic_info."""
         if diagnostic_info is None:
@@ -215,6 +265,7 @@ class ParsedSessionResponse:
 
             if span_dict and isinstance(span_dict, dict):
                 self.root_spans.append(span_dict)
+                self._search_vad_spans(span_dict)
                 if self.root_span is None or len(
                     span_dict.get(
                         "childSpans", span_dict.get("child_spans", [])
@@ -254,14 +305,22 @@ class ParsedSessionResponse:
                 continue
 
             # Top-level text
-            text_val = getattr(output, "text", None)
+            text_val = (
+                output.get("text")
+                if isinstance(output, dict)
+                else getattr(output, "text", None)
+            )
             if text_val and isinstance(text_val, str):
                 self.agent_texts.append(text_val)
                 self.detailed_trace.append(f"Agent Text: {text_val}")
                 top_level_agent_text_found = True
 
             # Top-level session ended flag
-            end_sess = getattr(output, "end_session", None)
+            end_sess = (
+                output.get("end_session") or output.get("endSession")
+                if isinstance(output, dict)
+                else getattr(output, "end_session", None)
+            )
             if end_sess is not None:
                 if hasattr(output, "_pb"):
                     if output._pb.WhichOneof("output_type") == "end_session":
@@ -270,21 +329,50 @@ class ParsedSessionResponse:
                     self.session_ended = True
 
             # Top-level Citations
-            cit_msg = getattr(output, "citations", None)
-            if cit_msg and hasattr(cit_msg, "cited_chunks"):
-                for chunk in cit_msg.cited_chunks:
+            cit_msg = (
+                output.get("citations")
+                if isinstance(output, dict)
+                else getattr(output, "citations", None)
+            )
+            if cit_msg:
+                cited_chunks = (
+                    cit_msg.get("cited_chunks", cit_msg.get("citedChunks", []))
+                    if isinstance(cit_msg, dict)
+                    else getattr(cit_msg, "cited_chunks", [])
+                )
+                for chunk in cited_chunks:
                     self.citations.append(
                         {
-                            "uri": getattr(chunk, "uri", ""),
-                            "title": getattr(chunk, "title", ""),
-                            "text": getattr(chunk, "text", ""),
+                            "uri": (
+                                chunk.get("uri", "")
+                                if isinstance(chunk, dict)
+                                else getattr(chunk, "uri", "")
+                            ),
+                            "title": (
+                                chunk.get("title", "")
+                                if isinstance(chunk, dict)
+                                else getattr(chunk, "title", "")
+                            ),
+                            "text": (
+                                chunk.get("text", "")
+                                if isinstance(chunk, dict)
+                                else getattr(chunk, "text", "")
+                            ),
                         }
                     )
 
             # Top-level custom payload Struct
-            payload_msg = getattr(output, "payload", None)
+            payload_msg = (
+                output.get("payload")
+                if isinstance(output, dict)
+                else getattr(output, "payload", None)
+            )
             if payload_msg:
-                payload_val = expand_pb_struct(payload_msg)
+                payload_val = (
+                    payload_msg
+                    if isinstance(payload_msg, dict)
+                    else expand_pb_struct(payload_msg)
+                )
                 self.custom_payloads.append(payload_val)
                 self.detailed_trace.append(
                     f"Custom Payload (Output): {payload_val}"
@@ -293,16 +381,40 @@ class ParsedSessionResponse:
                     self.session_ended = True
 
             # Top-level tool calls
-            tc_msg = getattr(output, "tool_calls", None)
-            if tc_msg and hasattr(tc_msg, "tool_calls"):
-                for tc in tc_msg.tool_calls:
-                    tool_name = getattr(tc, "tool", "") or getattr(
-                        tc, "display_name", ""
+            tc_msg = (
+                output.get("tool_calls") or output.get("toolCalls")
+                if isinstance(output, dict)
+                else getattr(output, "tool_calls", None)
+            )
+            if tc_msg:
+                tc_list = (
+                    tc_msg.get("tool_calls", tc_msg.get("toolCalls", []))
+                    if isinstance(tc_msg, dict)
+                    else getattr(tc_msg, "tool_calls", [])
+                )
+                for tc in tc_list:
+                    tool_name = (
+                        (
+                            tc.get("tool")
+                            or tc.get("display_name")
+                            or tc.get("displayName")
+                            or ""
+                        )
+                        if isinstance(tc, dict)
+                        else (
+                            getattr(tc, "tool", "")
+                            or getattr(tc, "display_name", "")
+                        )
                     )
                     tool_name = self._resolve_tool_name(tool_name)
-                    args = (
-                        expand_pb_struct(tc.args) if hasattr(tc, "args") else {}
-                    )
+                    if isinstance(tc, dict):
+                        args = tc.get("args", {})
+                    else:
+                        args = (
+                            expand_pb_struct(tc.args)
+                            if hasattr(tc, "args")
+                            else {}
+                        )
                     self.tool_calls.append(
                         ParsedToolCall(
                             name=tool_name,
@@ -318,15 +430,31 @@ class ParsedSessionResponse:
 
             # Diagnostic Info (turn-by-turn trace chunks)
             diagnostic_info = getattr(output, "diagnostic_info", None)
+            if diagnostic_info is None and isinstance(output, dict):
+                diagnostic_info = output.get("diagnostic_info") or output.get(
+                    "diagnosticInfo"
+                )
             if diagnostic_info:
                 # Parse guardrails
                 self._parse_guardrails(diagnostic_info)
 
                 # Parse messages
-                messages = getattr(diagnostic_info, "messages", []) or []
+                messages = (
+                    diagnostic_info.get("messages", [])
+                    if isinstance(diagnostic_info, dict)
+                    else getattr(diagnostic_info, "messages", []) or []
+                )
                 for message in messages:
-                    role = getattr(message, "role", "")
-                    chunks = getattr(message, "chunks", []) or []
+                    role = (
+                        message.get("role", "")
+                        if isinstance(message, dict)
+                        else getattr(message, "role", "")
+                    )
+                    chunks = (
+                        message.get("chunks", [])
+                        if isinstance(message, dict)
+                        else getattr(message, "chunks", []) or []
+                    )
 
                     for chunk in chunks:
                         # Detect chunk type
@@ -346,14 +474,24 @@ class ParsedSessionResponse:
                                 "agent_transfer",
                                 "payload",
                             ]:
-                                if getattr(chunk, attr, None) is not None:
+                                val = (
+                                    chunk.get(attr)
+                                    if isinstance(chunk, dict)
+                                    else getattr(chunk, attr, None)
+                                )
+                                if val is not None:
                                     chunk_type = attr
                                     break
 
                         # Process each type of chunk matching the active type
                         if chunk_type in ("text", "transcript"):
-                            text_val = getattr(chunk, "text", None) or getattr(
-                                chunk, "transcript", None
+                            text_val = (
+                                chunk.get("text") or chunk.get("transcript")
+                                if isinstance(chunk, dict)
+                                else (
+                                    getattr(chunk, "text", None)
+                                    or getattr(chunk, "transcript", None)
+                                )
                             )
                             if text_val and isinstance(text_val, str):
                                 if role.lower() == "user":
@@ -361,6 +499,14 @@ class ParsedSessionResponse:
                                     self.detailed_trace.append(
                                         f"User Query: {text_val}"
                                     )
+                                    if (
+                                        "<context>agent speaking was"
+                                        " interrupted" in text_val.lower()
+                                    ):
+                                        self.barge_in_context = text_val
+                                        self.detailed_trace.append(
+                                            f"Barge-In Context: {text_val}"
+                                        )
                                 elif not top_level_agent_text_found:
                                     self.agent_texts.append(text_val)
                                     self.detailed_trace.append(
@@ -368,21 +514,44 @@ class ParsedSessionResponse:
                                     )
 
                         elif chunk_type in ("tool_call", "function_call"):
-                            tc = getattr(chunk, "tool_call", None) or getattr(
-                                chunk, "function_call", None
+                            tc = (
+                                (
+                                    chunk.get("tool_call")
+                                    or chunk.get("toolCall")
+                                    or chunk.get("function_call")
+                                    or chunk.get("functionCall")
+                                )
+                                if isinstance(chunk, dict)
+                                else (
+                                    getattr(chunk, "tool_call", None)
+                                    or getattr(chunk, "function_call", None)
+                                )
                             )
                             if tc:
                                 tool_name = (
-                                    getattr(tc, "display_name", "")
-                                    or getattr(tc, "tool", "")
-                                    or getattr(tc, "name", "")
+                                    (
+                                        tc.get("display_name")
+                                        or tc.get("displayName")
+                                        or tc.get("tool")
+                                        or tc.get("name")
+                                        or ""
+                                    )
+                                    if isinstance(tc, dict)
+                                    else (
+                                        getattr(tc, "display_name", "")
+                                        or getattr(tc, "tool", "")
+                                        or getattr(tc, "name", "")
+                                    )
                                 )
                                 tool_name = self._resolve_tool_name(tool_name)
-                                args = (
-                                    expand_pb_struct(tc.args)
-                                    if hasattr(tc, "args")
-                                    else {}
-                                )
+                                if isinstance(tc, dict):
+                                    args = tc.get("args", {})
+                                else:
+                                    args = (
+                                        expand_pb_struct(tc.args)
+                                        if hasattr(tc, "args")
+                                        else {}
+                                    )
                                 self.tool_calls.append(
                                     ParsedToolCall(
                                         name=tool_name,
@@ -400,21 +569,44 @@ class ParsedSessionResponse:
                             "tool_response",
                             "function_response",
                         ):
-                            tr = getattr(
-                                chunk, "tool_response", None
-                            ) or getattr(chunk, "function_response", None)
+                            tr = (
+                                (
+                                    chunk.get("tool_response")
+                                    or chunk.get("toolResponse")
+                                    or chunk.get("function_response")
+                                    or chunk.get("functionResponse")
+                                )
+                                if isinstance(chunk, dict)
+                                else (
+                                    getattr(chunk, "tool_response", None)
+                                    or getattr(chunk, "function_response", None)
+                                )
+                            )
                             if tr:
                                 tool_name = (
-                                    getattr(tr, "display_name", "")
-                                    or getattr(tr, "tool", "")
-                                    or getattr(tr, "name", "")
+                                    (
+                                        tr.get("display_name")
+                                        or tr.get("displayName")
+                                        or tr.get("tool")
+                                        or tr.get("name")
+                                        or ""
+                                    )
+                                    if isinstance(tr, dict)
+                                    else (
+                                        getattr(tr, "display_name", "")
+                                        or getattr(tr, "tool", "")
+                                        or getattr(tr, "name", "")
+                                    )
                                 )
                                 tool_name = self._resolve_tool_name(tool_name)
-                                response_val = getattr(tr, "response", None)
-                                if response_val is not None:
-                                    response_val = expand_pb_struct(
-                                        response_val
-                                    )
+                                if isinstance(tr, dict):
+                                    response_val = tr.get("response")
+                                else:
+                                    response_val = getattr(tr, "response", None)
+                                    if response_val is not None:
+                                        response_val = expand_pb_struct(
+                                            response_val
+                                        )
                                 self.tool_responses.append(
                                     ParsedToolResponse(
                                         name=tool_name, response=response_val
@@ -426,11 +618,19 @@ class ParsedSessionResponse:
                                 )
 
                         elif chunk_type == "agent_transfer":
-                            at = getattr(chunk, "agent_transfer", None)
+                            at = (
+                                chunk.get("agent_transfer")
+                                or chunk.get("agentTransfer")
+                                if isinstance(chunk, dict)
+                                else getattr(chunk, "agent_transfer", None)
+                            )
                             if at:
                                 self.agent_transfer = at
-                                display_name = getattr(
-                                    at, "display_name", "unknown"
+                                display_name = (
+                                    at.get("display_name")
+                                    or at.get("displayName", "unknown")
+                                    if isinstance(at, dict)
+                                    else getattr(at, "display_name", "unknown")
                                 )
                                 self.detailed_trace.append(
                                     "Agent Transfer: Transferred to "
@@ -438,9 +638,17 @@ class ParsedSessionResponse:
                                 )
 
                         elif chunk_type == "payload":
-                            p = getattr(chunk, "payload", None)
+                            p = (
+                                chunk.get("payload")
+                                if isinstance(chunk, dict)
+                                else getattr(chunk, "payload", None)
+                            )
                             if p:
-                                payload_val = expand_pb_struct(p)
+                                payload_val = (
+                                    p
+                                    if isinstance(p, dict)
+                                    else expand_pb_struct(p)
+                                )
                                 self.custom_payloads.append(payload_val)
                                 self.detailed_trace.append(
                                     f"Custom Payload: {payload_val}"
@@ -449,14 +657,59 @@ class ParsedSessionResponse:
                                     self.session_ended = True
 
                     # Also check action transfer at the message level
-                    actions = getattr(message, "actions", None)
-                    if (
-                        actions
-                        and hasattr(actions, "transfer_to_agent")
-                        and actions.transfer_to_agent
-                    ):
-                        self.agent_transfer = actions.transfer_to_agent
+                    actions = (
+                        message.get("actions")
+                        if isinstance(message, dict)
+                        else getattr(message, "actions", None)
+                    )
+                    if actions:
+                        transfer = (
+                            actions.get("transfer_to_agent")
+                            or actions.get("transferToAgent")
+                            if isinstance(actions, dict)
+                            else (
+                                getattr(actions, "transfer_to_agent", None)
+                                if hasattr(actions, "transfer_to_agent")
+                                else None
+                            )
+                        )
+                        if transfer:
+                            self.agent_transfer = transfer
 
         # Cleanup agent texts
         self.consolidated_agent_text = " ".join(self.agent_texts).strip()
         self.consolidated_user_text = " ".join(self.user_texts).strip()
+
+        if (
+            self.barge_in_metadata
+            and type(self.barge_in_metadata).__name__ != "MagicMock"
+            and getattr(self.barge_in_metadata, "barge_in_attempted", False)
+        ):
+            played_ms = getattr(
+                self.barge_in_metadata, "played_audio_duration_ms", 0.0
+            )
+            total_ms = getattr(
+                self.barge_in_metadata, "total_audio_duration_ms", 0.0
+            )
+            played_str = (
+                f"{played_ms:.0f}"
+                if isinstance(played_ms, (int, float))
+                else str(played_ms)
+            )
+            total_str = (
+                f"{total_ms:.0f}"
+                if isinstance(total_ms, (int, float))
+                else str(total_ms)
+            )
+            self.detailed_trace.append(
+                f"Barge-In Signal: interrupted="
+                f"{self.barge_in_metadata.interrupted}, "
+                f"played_ms={played_str}, "
+                f"total_ms={total_str}"
+            )
+        if self.vad_barge_in:
+            self.detailed_trace.append(f"VAD Barge-In: {self.vad_barge_in}")
+        if self.vad_skip_reason:
+            self.detailed_trace.append(
+                f"VAD Skip Reason: {self.vad_skip_reason}"
+            )
