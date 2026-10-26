@@ -43,7 +43,7 @@ conversations:
     user: "cupcake decorations"
     variables:
       # Variables injected BEFORE the turn executes into the backend context
-      first_turn: true 
+      first_turn: true
     expectations:
       - type: "tool_called"
         value: "search_products"
@@ -75,13 +75,13 @@ conversations:
   # ----------------------------------------------------------------------------
   - conversation: "Dynamic Context Session Injection"
     user: "Does the policy cover that procedure?"
-    # By providing a string session ID, TurnEvals invokes ConversationHistory to automatically 
+    # By providing a string session ID, TurnEvals invokes ConversationHistory to automatically
     # fetch, format, and serialize the prior conversation trajectory.
     historical_contexts: "simulator-1d519e30-6521-4ca6-bc14-e1dd46d1d2c3"
-    # We can configure Sessions.run via TurnEvals to only fetch a subset of the historical session's turns. 
+    # We can configure Sessions.run via TurnEvals to only fetch a subset of the historical session's turns.
     # (e.g., stopping the trace extraction after 5 turns to test the middle state of a conversation).
     # If turn_count is provided, historical_contexts must also be provided.
-    turn_count: 5 
+    turn_count: 5
     expectations:
       - type: "contains"
         value: "Yes, that procedure is covered"
@@ -99,3 +99,37 @@ conversations:
     expectations:
       - type: "contains"
         value: "member ID"
+
+  # ----------------------------------------------------------------------------
+  # 7. Voice Interruption & Barge-In Testing (Multi-Turn Audio Flow)
+  # ----------------------------------------------------------------------------
+  - conversation: "Audio Barge-In and Interruption Check"
+    tags: [voice, barge_in]
+    config:
+      # Barge-in requires audio modality (WebSocket Bidi audio streaming)
+      modality: "AUDIO"
+      capture_agent_audio: true
+    turns:
+      - turn: "1"
+        user: "Hi, I'd like to ask a few questions about my order."
+        expectations:
+          - type: "contains"
+            value: "How can I help"
+      - turn: "2"
+        # barge_in_after_ms: Time in milliseconds after agent audio starts playing
+        # before the user interrupts with speech.
+        user: "Wait, sorry to interrupt, can you just cancel order 12345?"
+        barge_in_after_ms: 1200
+        expectations:
+          # Asserts the agent audio playback was halted upon user speech
+          - type: "agent_interrupted"
+            value: true
+          # Asserts the Voice Activity Detector recognized the user speech as a barge-in
+          - type: "vad_barge_in"
+            value: true
+          # Asserts the agent prompt context received barge-in awareness
+          - type: "barge_in_awareness_injected"
+            value: true
+          # Standard turn expectations can be combined with barge-in assertions
+          - type: "contains"
+            value: "cancel"

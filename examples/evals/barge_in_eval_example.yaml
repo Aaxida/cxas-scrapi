@@ -1,0 +1,173 @@
+# Copyright 2026 Google LLC
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     https://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+# =============================================================================
+# BARGE-IN EVALUATIONS (TurnEvals & SimulationEvals)
+#
+# This file provides reference configurations for testing conversational agent
+# barge-in and voice interruption behavior in Google Customer Engagement Suite
+# (CES).
+#
+# REQUIREMENTS:
+#   - Barge-in evaluations require audio streaming modality (WebSocket Bidi stream
+#     or modality: "AUDIO") so real-time audio playback tracking and VAD
+#     (Voice Activity Detection) spans are enabled.
+#   - In TurnEvals, barge-in is configured via `barge_in_after_ms` on TurnStep.
+#     The first turn (turn 0) cannot have `barge_in_after_ms`, and consecutive
+#     barge-in turns are disallowed.
+#   - In SimulationEvals, barge-in is configured via `barge_in_after_ms` on Step.
+#
+# BARGE-IN ASSERTION OPERATORS (TurnEvals):
+#   - `agent_interrupted`: (bool) Asserts server emitted interruption_signal
+#     or client truncated agent audio playback upon user speech.
+#   - `vad_barge_in`: (bool) Asserts server VAD recognized user speech as barge-in.
+#   - `barge_in_awareness_injected`: (bool | str) Asserts agent context prompt
+#     received barge-in awareness text.
+#   - `vad_skip_reason`: (str) Asserts reason why barge-in was suppressed
+#     (e.g., "no barge-in period" when barge-in is disabled).
+# =============================================================================
+
+config:
+  # Global configuration for TurnEvals runner.
+  # Barge-in requires AUDIO modality for bidirectional audio streaming.
+  modality: "AUDIO"
+  capture_agent_audio: true
+
+# -----------------------------------------------------------------------------
+# 1. TurnEvals: Deterministic Multi-Turn Barge-In Scenarios
+# -----------------------------------------------------------------------------
+conversations:
+  # Scenario 1: Basic customer interruption during welcome/inquiry
+  - conversation: "Acme Order Support - Return Request Barge-In"
+    tags: [P0, voice, barge_in, returns]
+    config:
+      modality: "AUDIO"
+      capture_agent_audio: true
+    turns:
+      - turn: "1"
+        user: "Hello, I called about an item I purchased last week."
+        expectations:
+          - type: "contains"
+            value: "How can I help"
+      - turn: "2"
+        # User interrupts 1200ms into the agent's playback
+        user: "Wait, sorry to cut in, I just want to return order 12345."
+        barge_in_after_ms: 1200
+        expectations:
+          - type: "agent_interrupted"
+            value: true
+          - type: "vad_barge_in"
+            value: true
+          - type: "barge_in_awareness_injected"
+            value: true
+          - type: "contains"
+            value: "12345"
+
+  # Scenario 2: Mid-explanation interruption with tool call verification
+  - conversation: "Acme Billing - Cancellation Request Barge-In"
+    tags: [P1, voice, barge_in, billing]
+    config:
+      modality: "AUDIO"
+      capture_agent_audio: true
+    turns:
+      - turn: "1"
+        user: "Can you explain the recurring charge on my monthly bill?"
+        expectations:
+          - type: "contains"
+            value: "charge"
+      - turn: "2"
+        # User interrupts 2000ms after the agent starts explaining
+        user: "Never mind the details, please just cancel subscription SUB-9900."
+        barge_in_after_ms: 2000
+        expectations:
+          - type: "agent_interrupted"
+            value: true
+          - type: "vad_barge_in"
+            value: true
+          - type: "barge_in_awareness_injected"
+            value: true
+          - type: "contains"
+            value: "cancel"
+
+  # Scenario 3: Agent configured with barge-in disabled (testing skip reason)
+  - conversation: "Acme Critical Policy - Barge-In Disabled Compliance"
+    tags: [P2, voice, compliance]
+    config:
+      modality: "AUDIO"
+      disable_barge_in_control: true
+    turns:
+      - turn: "1"
+        user: "I need to file an insurance claim."
+        expectations:
+          - type: "contains"
+            value: "claim"
+      - turn: "2"
+        # User attempts to interrupt during mandatory disclaimer playback
+        user: "I already know all that, just let me file it."
+        barge_in_after_ms: 1000
+        expectations:
+          - type: "agent_interrupted"
+            value: false
+          - type: "vad_skip_reason"
+            value: "no barge-in period"
+
+# -----------------------------------------------------------------------------
+# 2. SimulationEvals: Goal-Oriented LLM User Barge-In Scenarios
+# -----------------------------------------------------------------------------
+evals:
+  - name: acme_urgent_cancellation_barge_in_simulation
+    tags: [P0, audio, barge_in, orders]
+    steps:
+      - goal: Inquire about general store return policies
+        success_criteria: Agent begins explaining the store return policies
+        response_guide: >
+          You are a customer calling Acme Support. Ask: "Can you explain your
+          return and refund policies for retail orders?"
+        max_turns: 6
+      - goal: Barge in with an urgent order cancellation request
+        success_criteria: Agent ceases policy explanation and processes order cancellation
+        response_guide: >
+          While the agent is explaining the return policy, interrupt with:
+          "Wait, sorry to interrupt! I need to cancel order 98765 right now before it ships!"
+        max_turns: 8
+        # Offset in milliseconds after agent audio playback begins
+        barge_in_after_ms: 1500
+    expectations:
+      - "The agent must halt its return policy explanation when interrupted"
+      - "The agent must switch focus to cancelling order 98765"
+      - "The agent must confirm the cancellation status"
+    session_parameters:
+      order_id: "98765"
+
+  - name: acme_technical_support_escalation_barge_in
+    tags: [P1, audio, barge_in, support]
+    steps:
+      - goal: Report a network connectivity troubleshooting issue
+        success_criteria: Agent offers initial router reboot steps
+        response_guide: >
+          You are calling Acme Tech Support. State: "My router has a red blinking light."
+        max_turns: 6
+      - goal: Barge in to request escalation to a tier-2 representative
+        success_criteria: Agent halts basic script and initiates transfer
+        response_guide: >
+          While the agent is explaining how to reboot the router, interrupt with:
+          "I already tried rebooting three times. Please transfer me to a human specialist."
+        max_turns: 8
+        barge_in_after_ms: 1800
+    expectations:
+      - "The agent must stop explaining the reboot procedure upon user interruption"
+      - "The agent must acknowledge that the user already completed basic troubleshooting"
+      - "The agent must initiate a transfer or escalate the request"
+    session_parameters:
+      trouble_ticket: "NET-404"

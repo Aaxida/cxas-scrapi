@@ -26,6 +26,7 @@ import time
 import typing
 import uuid
 import wave
+from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
@@ -126,6 +127,19 @@ _BIDI_TRACE_RE = re.compile(
 _BIDI_RUN_TIMEOUT_S = 120
 
 
+@dataclass
+class BargeInMetadata:
+    barge_in_attempted: bool = False
+    barge_in_after_ms: int | None = None
+    interrupted: bool = False
+    barge_in_signal_received: bool = False
+    barge_in_ignored: bool = False
+    barge_in_window_missed: bool = False
+    played_audio_duration_ms: float = 0.0
+    total_audio_duration_ms: float = 0.0
+    estimated_heard_text: str = ""
+
+
 class ScrapiRunSessionResponse:
     """Wrapper around types.RunSessionResponse.
 
@@ -133,10 +147,14 @@ class ScrapiRunSessionResponse:
     """
 
     def __init__(
-        self, original_response: Any, agent_audio_paths: dict[int, str]
+        self,
+        original_response: Any,
+        agent_audio_paths: dict[int, str] | None = None,
+        barge_in_metadata: BargeInMetadata | None = None,
     ) -> None:
         self._original_response = original_response
-        self.agent_audio_paths = agent_audio_paths
+        self.agent_audio_paths = agent_audio_paths or {}
+        self.barge_in_metadata = barge_in_metadata
 
     def __getattr__(self, name: str) -> typing.Any:
         return getattr(self._original_response, name)
@@ -194,12 +212,21 @@ class AgentTurnManager:
         self.interactive = interactive
 
         self.len_audio_bytes_received = 0
+        self.raw_audio_bytes_received = 0
         self.turn_completed_flag = False
         self.first_audio_received_time = None
         self.expected_duration_seconds = None
         self.is_welcome_turn = False
         self.current_turn_index = None
         self.lock = threading.Lock()
+
+        self.barge_in_after_ms: int | None = None
+        self.interrupted_flag: bool = False
+        self.barge_in_signal_received: bool = False
+        self.interrupted_time: float | None = None
+        self.barge_in_triggered: bool = False
+        self.barge_in_triggered_time: float | None = None
+        self.barge_in_window_missed: bool = False
 
     def _calculate_rms(self, audio_bytes: bytes) -> float:
         count = len(audio_bytes) // 2
@@ -211,6 +238,7 @@ class AgentTurnManager:
 
     def add_audio(self, audio_bytes: bytes) -> None:
         with self.lock:
+            self.raw_audio_bytes_received += len(audio_bytes)
             if self.interactive:
                 if self.turn_completed_flag:
                     return
@@ -225,27 +253,120 @@ class AgentTurnManager:
         with self.lock:
             self.turn_completed_flag = True
 
+    def mark_interrupted(self, barge_in: bool = True) -> None:
+        with self.lock:
+            self.interrupted_flag = True
+            self.barge_in_signal_received = barge_in
+            if self.interrupted_time is None:
+                self.interrupted_time = time.time()
+
     def reset(self) -> None:
         with self.lock:
             self.len_audio_bytes_received = 0
+            self.raw_audio_bytes_received = 0
             self.turn_completed_flag = False
             self.first_audio_received_time = None
             self.expected_duration_seconds = None
             self.is_welcome_turn = False
             self.current_turn_index = None
+            self.barge_in_after_ms = None
+            self.interrupted_flag = False
+            self.barge_in_signal_received = False
+            self.interrupted_time = None
+            self.barge_in_triggered = False
+            self.barge_in_triggered_time = None
+            self.barge_in_window_missed = False
 
-    def prepare_for_turn(self, expected_turn_index: int) -> None:
+    def prepare_for_turn(
+        self, expected_turn_index: int, barge_in_after_ms: int | None = None
+    ) -> None:
         with self.lock:
             logging.debug(
                 "Preparing manager for turn index %d. Resetting state.",
                 expected_turn_index,
             )
             self.len_audio_bytes_received = 0
+            self.raw_audio_bytes_received = 0
             self.turn_completed_flag = False
             self.first_audio_received_time = None
             self.expected_duration_seconds = None
             self.is_welcome_turn = expected_turn_index <= 1
             self.current_turn_index = expected_turn_index
+            self.barge_in_after_ms = barge_in_after_ms
+            self.interrupted_flag = False
+            self.barge_in_signal_received = False
+            self.interrupted_time = None
+            self.barge_in_triggered = False
+            self.barge_in_triggered_time = None
+            self.barge_in_window_missed = False
+
+    def is_full_playback_done(self) -> bool:
+        with self.lock:
+            if self.interrupted_flag:
+                return True
+            if not self.turn_completed_flag:
+                return False
+            if self.first_audio_received_time is None:
+                return True
+            audio_duration_seconds = (
+                self.len_audio_bytes_received / self.bytes_per_second
+            )
+            if self.interactive:
+                audio_duration_seconds += 0.5
+            current_playback_time = time.time() - self.first_audio_received_time
+            return current_playback_time >= audio_duration_seconds
+
+    def record_barge_in_triggered(self) -> None:
+        with self.lock:
+            self.barge_in_triggered = True
+            if self.barge_in_triggered_time is None:
+                self.barge_in_triggered_time = time.time()
+
+    def get_barge_in_metadata(
+        self, agent_text: str = "", barge_in_ignored: bool = False
+    ) -> BargeInMetadata:
+        with self.lock:
+            total_audio_duration_ms = (
+                (self.raw_audio_bytes_received / self.bytes_per_second) * 1000.0
+                if self.bytes_per_second > 0
+                else 0.0
+            )
+            if self.first_audio_received_time is not None:
+                if self.interrupted_flag:
+                    end_t = (
+                        self.interrupted_time
+                        or self.barge_in_triggered_time
+                        or time.time()
+                    )
+                    played_ms = max(
+                        0.0, (end_t - self.first_audio_received_time) * 1000.0
+                    )
+                    if total_audio_duration_ms > 0:
+                        played_ms = min(played_ms, total_audio_duration_ms)
+                else:
+                    played_ms = total_audio_duration_ms
+            else:
+                played_ms = 0.0
+
+            if self.interrupted_flag and agent_text:
+                clean_text = re.sub(r"<[^>]+>", " ", agent_text)
+                words = clean_text.split()
+                spoken_count = min(int(3.3 * played_ms / 1000.0), len(words))
+                estimated_heard_text = " ".join(words[:spoken_count])
+            else:
+                estimated_heard_text = agent_text
+
+            return BargeInMetadata(
+                barge_in_attempted=self.barge_in_after_ms is not None,
+                barge_in_after_ms=self.barge_in_after_ms,
+                interrupted=self.interrupted_flag,
+                barge_in_signal_received=self.barge_in_signal_received,
+                barge_in_ignored=barge_in_ignored,
+                barge_in_window_missed=self.barge_in_window_missed,
+                played_audio_duration_ms=played_ms,
+                total_audio_duration_ms=total_audio_duration_ms,
+                estimated_heard_text=estimated_heard_text,
+            )
 
     def update_turn_index(self, turn_idx: int) -> bool:
         with self.lock:
@@ -256,6 +377,33 @@ class AgentTurnManager:
 
     def is_agent_done_talking(self) -> bool:
         with self.lock:
+            if self.interrupted_flag:
+                return True
+
+            if self.barge_in_after_ms is not None:
+                if self.first_audio_received_time is not None:
+                    elapsed_ms = (
+                        time.time() - self.first_audio_received_time
+                    ) * 1000.0
+                    if elapsed_ms >= self.barge_in_after_ms:
+                        self.barge_in_triggered = True
+                        if self.barge_in_triggered_time is None:
+                            self.barge_in_triggered_time = time.time()
+                        return True
+                    if self.turn_completed_flag:
+                        audio_duration_ms = (
+                            self.len_audio_bytes_received
+                            / self.bytes_per_second
+                        ) * 1000.0
+                        if elapsed_ms >= audio_duration_ms:
+                            self.barge_in_window_missed = True
+                            return True
+                    return False
+                if self.turn_completed_flag:
+                    self.barge_in_window_missed = True
+                    return True
+                return False
+
             if self.skip_playback_wait:
                 return self.turn_completed_flag
 
@@ -371,6 +519,15 @@ class BidiSessionHandler:
         # over, so the socket close that follows is the expected teardown.
         self._self_terminated_transfer = False
 
+        self._defer_turn_flush = False
+        self._barge_in_pair_active = False
+        self._barge_in_phase: str = "idle"
+        self._barge_in_lock = threading.Lock()
+        self._ws_send_lock = threading.Lock()
+        self._turn_n_server_idx: int | None = None
+        self.next_turn_outputs: list[Any] = []
+        self.next_turn_completed_flag = False
+
         # Setup continuous background noise segment if provided
         self.bg_noise_segment = None
         self.bg_noise_cursor = 0
@@ -422,19 +579,22 @@ class BidiSessionHandler:
         if self.bg_noise_segment is None:
             return b"\x00" * chunk_bytes_len
 
-        chunk_segment = self.bg_noise_segment[
-            self.bg_noise_cursor : self.bg_noise_cursor + duration_ms
-        ]
-        self.bg_noise_cursor += duration_ms
+        with self._ws_send_lock:
+            chunk_segment = self.bg_noise_segment[
+                self.bg_noise_cursor : self.bg_noise_cursor + duration_ms
+            ]
+            self.bg_noise_cursor += duration_ms
 
-        if self.bg_noise_cursor >= len(self.bg_noise_segment):
-            self.bg_noise_cursor = 0
+            if self.bg_noise_cursor >= len(self.bg_noise_segment):
+                self.bg_noise_cursor = 0
 
-        if len(chunk_segment) < duration_ms:
-            padding_len = duration_ms - len(chunk_segment)
-            chunk_segment = chunk_segment + self.bg_noise_segment[:padding_len]
+            if len(chunk_segment) < duration_ms:
+                padding_len = duration_ms - len(chunk_segment)
+                chunk_segment = (
+                    chunk_segment + self.bg_noise_segment[:padding_len]
+                )
 
-        return chunk_segment.raw_data[:chunk_bytes_len]
+            return chunk_segment.raw_data[:chunk_bytes_len]
 
     def _send_silence(self, num_chunks: int) -> None:
         chunk_duration_ms = 100
@@ -448,22 +608,42 @@ class BidiSessionHandler:
                 preserving_proto_field_name=False,
                 indent=None,
             )
-            self.ws_app.send(query_json)
+            with self._ws_send_lock:
+                if (
+                    self.ws_app
+                    and self.ws_app.sock
+                    and self.ws_app.sock.connected
+                ):
+                    self.ws_app.send(query_json)
             time.sleep(CHUNK_DELAY)
 
-    def _send_audio_message(
-        self, audio_payload: dict[str, Any], turn_index: int
+    def _stream_input_payload(
+        self,
+        input_item: dict[str, Any] | list[dict[str, Any]],
+        turn_index: int,
+        leading_silence: bool = True,
+        trailing_silence: bool = True,
     ) -> None:
-        with self.lock:
-            self.is_sending_audio = True
-        try:
-            expected_idx = self.max_server_turn_idx + 1
-            self.agent_turn_manager.prepare_for_turn(
-                expected_turn_index=expected_idx
-            )
-            audio_bytes = audio_payload["audio"]
-            variables = audio_payload.get("variables")
+        if isinstance(input_item, list):
+            for i, sub_item in enumerate(input_item):
+                self._stream_input_payload(
+                    sub_item,
+                    turn_index,
+                    leading_silence=leading_silence and (i == 0),
+                    trailing_silence=trailing_silence
+                    and (i == len(input_item) - 1),
+                )
+            return
 
+        payload = (
+            input_item["audio"]
+            if isinstance(input_item.get("audio"), dict)
+            else input_item
+        )
+        audio_bytes = payload.get("audio")
+
+        if audio_bytes is not None:
+            variables = payload.get("variables")
             if variables:
                 logging.debug(
                     "Sending variables before audio chunks: %s", variables
@@ -476,23 +656,25 @@ class BidiSessionHandler:
                     preserving_proto_field_name=False,
                     indent=None,
                 )
-                self.ws_app.send(var_json)
+                with self._ws_send_lock:
+                    if (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        self.ws_app.send(var_json)
                 time.sleep(0.5)
 
-            logging.debug(
-                "Sending leading silence before turn %d...", turn_index
-            )
-            self._send_silence(
-                SILENCE_PADDING_CHUNKS
-            )  # 0.3 seconds of leading silence
+            if leading_silence:
+                logging.debug(
+                    "Sending leading silence before turn %d...", turn_index
+                )
+                self._send_silence(SILENCE_PADDING_CHUNKS)
 
             logging.debug("Sending audio chunks for turn %d...", turn_index)
-
             for i in range(0, len(audio_bytes), AUDIO_CHUNK_SIZE):
                 chunk = audio_bytes[i : i + AUDIO_CHUNK_SIZE]
 
-                # Dynamically mix continuous background noise chunk-by-chunk
-                # in real-time
                 if self.bg_noise_segment is not None:
                     try:
                         speech_seg = AudioSegment(
@@ -524,17 +706,69 @@ class BidiSessionHandler:
                     preserving_proto_field_name=False,
                     indent=None,
                 )
-                self.ws_app.send(query_json)
+                with self._ws_send_lock:
+                    if (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        self.ws_app.send(query_json)
                 time.sleep(CHUNK_DELAY)
 
-            logging.debug(
-                "Sending trailing silence for turn %d to "
-                "trigger endpointing...",
-                turn_index,
+            if trailing_silence:
+                logging.debug(
+                    "Sending trailing silence for turn %d to "
+                    "trigger endpointing...",
+                    turn_index,
+                )
+                self._send_silence(SILENCE_PADDING_CHUNKS)
+        else:
+            try:
+                session_input_pb = types.SessionInput()._pb
+                json_format.ParseDict(
+                    input_item,
+                    session_input_pb,
+                    ignore_unknown_fields=False,
+                )
+                session_input = types.SessionInput(session_input_pb)
+                query_message = types.BidiSessionClientMessage(
+                    realtime_input=session_input
+                )
+                query_json = json_format.MessageToJson(
+                    query_message._pb,
+                    preserving_proto_field_name=False,
+                    indent=None,
+                )
+                with self._ws_send_lock:
+                    if (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        self.ws_app.send(query_json)
+                if "variables" in input_item:
+                    time.sleep(0.5)
+            except Exception as e:
+                logging.debug(
+                    "Failed to send generic input %s: %s", input_item, e
+                )
+
+    def _send_audio_message(
+        self, audio_payload: dict[str, Any], turn_index: int
+    ) -> None:
+        with self.lock:
+            self.is_sending_audio = True
+        try:
+            expected_idx = self.max_server_turn_idx + 1
+            self.agent_turn_manager.prepare_for_turn(
+                expected_turn_index=expected_idx
             )
-            self._send_silence(
-                SILENCE_PADDING_CHUNKS
-            )  # 0.3 seconds of trailing silence
+            self._stream_input_payload(
+                audio_payload,
+                turn_index,
+                leading_silence=True,
+                trailing_silence=True,
+            )
 
             logging.debug("Waiting for agent to finish turn %d...", turn_index)
             while not self.agent_turn_manager.is_agent_done_talking():
@@ -545,6 +779,250 @@ class BidiSessionHandler:
 
             time.sleep(1)  # Small pause between turns
         finally:
+            with self.lock:
+                self.is_sending_audio = False
+
+    def _send_barge_in_pair(self, input_item: dict[str, Any], idx: int) -> None:
+        turn_n_input = input_item["turn"]
+        turn_n1_input = input_item["barge_in_next"]
+        barge_in_after_ms = input_item.get("barge_in_after_ms", 0)
+
+        with self.lock:
+            self.is_sending_audio = True
+        self._barge_in_pair_active = True
+        self._defer_turn_flush = True
+        self._turn_n_server_idx = None
+        self.next_turn_outputs = []
+        self.next_turn_completed_flag = False
+        with self._barge_in_lock:
+            self._barge_in_phase = "turn_n"
+
+        try:
+            turn_n_local_idx = self.current_agent_turn_idx
+            expected_idx = self.max_server_turn_idx + 1
+            self.agent_turn_manager.prepare_for_turn(
+                expected_turn_index=expected_idx,
+                barge_in_after_ms=barge_in_after_ms,
+            )
+
+            self._stream_input_payload(
+                turn_n_input,
+                idx,
+                leading_silence=True,
+                trailing_silence=True,
+            )
+
+            while not self.agent_turn_manager.is_agent_done_talking():
+                if self._connection_error is not None or not (
+                    self.ws_app
+                    and self.ws_app.sock
+                    and self.ws_app.sock.connected
+                ):
+                    break
+                self._send_silence(1)
+
+            if self._connection_error is not None:
+                if self.response_queue is not None:
+                    self.response_queue.put(
+                        {
+                            "session_ended": True,
+                            "connection_error": self._connection_error,
+                        }
+                    )
+                return
+
+            self.agent_turn_manager.record_barge_in_triggered()
+            self._stream_input_payload(
+                turn_n1_input,
+                idx + 1,
+                leading_silence=False,
+                trailing_silence=True,
+            )
+
+            wait_start = time.time()
+            while (
+                (time.time() - wait_start < 2.0)
+                and not self.agent_turn_manager.interrupted_flag
+                and not self.next_turn_outputs
+            ):
+                if self._connection_error is not None or not (
+                    self.ws_app
+                    and self.ws_app.sock
+                    and self.ws_app.sock.connected
+                ):
+                    break
+                self._send_silence(1)
+
+            if (
+                self.agent_turn_manager.interrupted_flag
+                and not self.agent_turn_manager.turn_completed_flag
+            ):
+                turn_n_wait_start = time.time()
+                while (
+                    time.time() - turn_n_wait_start < 2.0
+                ) and not self.agent_turn_manager.turn_completed_flag:
+                    if self._connection_error is not None or not (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        break
+                    self._send_silence(1)
+
+            if (
+                not self.agent_turn_manager.interrupted_flag
+                and not self.agent_turn_manager.barge_in_window_missed
+            ):
+                while not self.agent_turn_manager.is_full_playback_done():
+                    if self._connection_error is not None or not (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        break
+                    self._send_silence(1)
+
+            if (
+                not self.agent_turn_manager.interrupted_flag
+                and not self.agent_turn_manager.barge_in_window_missed
+                and not self.next_turn_outputs
+            ):
+                grace_start = time.time()
+                while (
+                    (time.time() - grace_start < 1.5)
+                    and not self.next_turn_outputs
+                    and not self.agent_turn_manager.interrupted_flag
+                ):
+                    if self._connection_error is not None or not (
+                        self.ws_app
+                        and self.ws_app.sock
+                        and self.ws_app.sock.connected
+                    ):
+                        break
+                    self._send_silence(1)
+
+            barge_in_ignored = (
+                not self.agent_turn_manager.interrupted_flag
+                and not self.agent_turn_manager.barge_in_window_missed
+                and not self.next_turn_outputs
+            )
+
+            with self._barge_in_lock:
+                turn_n_outputs_snapshot = list(self.current_turn_outputs)
+
+            agent_text = ParsedSessionResponse(
+                turn_n_outputs_snapshot
+            ).consolidated_agent_text
+            metadata = self.agent_turn_manager.get_barge_in_metadata(
+                agent_text=agent_text,
+                barge_in_ignored=barge_in_ignored,
+            )
+
+            max_dur = (
+                metadata.played_audio_duration_ms
+                if self.agent_turn_manager.interrupted_flag
+                else None
+            )
+            turn_n_audio = self._save_agent_audio_for_index(
+                turn_n_local_idx, max_duration_ms=max_dur
+            )
+            turn_n_response = ScrapiRunSessionResponse(
+                original_response=types.RunSessionResponse(
+                    outputs=turn_n_outputs_snapshot
+                ),
+                agent_audio_paths=turn_n_audio,
+                barge_in_metadata=metadata,
+            )
+            if self.response_queue is not None:
+                self.response_queue.put(turn_n_response)
+
+            turn_n_ended = False
+            for out in turn_n_outputs_snapshot:
+                if self._output_ends_session(out):
+                    turn_n_ended = True
+                    break
+            if self._self_terminated_transfer or turn_n_ended:
+                if self.response_queue is not None:
+                    self.response_queue.put({"session_ended": True})
+                return
+
+            if (
+                self.agent_turn_manager.interrupted_flag
+                or self.agent_turn_manager.barge_in_window_missed
+                or self.next_turn_outputs
+            ):
+                turn_n1_server_idx = (self._turn_n_server_idx or 0) + 1
+                with self._barge_in_lock:
+                    self._barge_in_phase = "turn_n1"
+                    self.agent_turn_manager.prepare_for_turn(
+                        expected_turn_index=turn_n1_server_idx
+                    )
+                    for out in self.next_turn_outputs:
+                        if getattr(out, "audio", None):
+                            self.agent_turn_manager.add_audio(out.audio)
+                        if getattr(out, "turn_completed", False):
+                            self.agent_turn_manager.mark_turn_completed()
+
+                if not self.next_turn_completed_flag:
+                    n1_wait_start = time.time()
+                    while not self.next_turn_completed_flag and (
+                        time.time() - n1_wait_start < 85.0
+                    ):
+                        if self._connection_error is not None or not (
+                            self.ws_app
+                            and self.ws_app.sock
+                            and self.ws_app.sock.connected
+                        ):
+                            break
+                        self._send_silence(1)
+
+                if self.next_turn_completed_flag:
+                    while not self.agent_turn_manager.is_agent_done_talking():
+                        if self._connection_error is not None or not (
+                            self.ws_app
+                            and self.ws_app.sock
+                            and self.ws_app.sock.connected
+                        ):
+                            break
+                        self._send_silence(1)
+
+                with self._barge_in_lock:
+                    turn_n1_outputs_snapshot = list(self.next_turn_outputs)
+
+                turn_n1_audio = self._save_agent_audio_for_index(
+                    turn_n_local_idx + 1
+                )
+                turn_n1_response = ScrapiRunSessionResponse(
+                    original_response=types.RunSessionResponse(
+                        outputs=turn_n1_outputs_snapshot
+                    ),
+                    agent_audio_paths=turn_n1_audio,
+                )
+                if self.response_queue is not None:
+                    self.response_queue.put(turn_n1_response)
+            else:
+                time.sleep(1.0)
+                turn_n1_response = ScrapiRunSessionResponse(
+                    original_response=types.RunSessionResponse(outputs=[]),
+                    agent_audio_paths={},
+                    barge_in_metadata=metadata,
+                )
+                if self.response_queue is not None:
+                    self.response_queue.put(turn_n1_response)
+
+            self.current_agent_turn_idx = turn_n_local_idx + 2
+            self.current_turn_outputs = []
+            self.next_turn_outputs = []
+            self._barge_in_pair_active = False
+            self._defer_turn_flush = False
+            self._turn_n_server_idx = None
+            time.sleep(1)
+        finally:
+            with self._barge_in_lock:
+                self._barge_in_phase = "idle"
+            self._barge_in_pair_active = False
+            self._defer_turn_flush = False
+            self._turn_n_server_idx = None
             with self.lock:
                 self.is_sending_audio = False
 
@@ -609,6 +1087,10 @@ class BidiSessionHandler:
                 self.ws_app.close()
 
     def _send_single_input(self, input_item: dict[str, Any], idx: int) -> None:
+        if "barge_in_next" in input_item:
+            self._send_barge_in_pair(input_item, idx)
+            return
+
         if "audio" in input_item:
             self._send_audio_message(input_item["audio"], idx)
             return
@@ -642,7 +1124,13 @@ class BidiSessionHandler:
                     expected_turn_index=expected_idx
                 )
             logging.debug("Sending non-audio input: %s", query_json)
-            self.ws_app.send(query_json)
+            with self._ws_send_lock:
+                if (
+                    self.ws_app
+                    and self.ws_app.sock
+                    and self.ws_app.sock.connected
+                ):
+                    self.ws_app.send(query_json)
 
             if is_turn_input:
                 logging.debug(
@@ -665,14 +1153,19 @@ class BidiSessionHandler:
         except Exception as e:
             logging.debug("Failed to send generic input %s: %s", input_item, e)
 
-    def _save_and_increment_agent_audio(self) -> None:
+    def _save_agent_audio_for_index(
+        self, turn_index: int, max_duration_ms: float | None = None
+    ) -> dict[int, str]:
         with self.audio_lock:
-            turn_index = self.current_agent_turn_idx
-            buffer = self.turn_audio_buffers.get(turn_index, b"")
-            buffer_copy = bytes(buffer)
-            self.current_agent_turn_idx += 1
+            buffer = bytes(self.turn_audio_buffers.get(turn_index, b""))
 
-        if buffer_copy and self.capture_agent_audio:
+        if max_duration_ms is not None and max_duration_ms >= 0:
+            max_bytes = (
+                int((max_duration_ms / 1000.0) * SAMPLE_RATE) * SAMPLE_WIDTH
+            )
+            buffer = buffer[:max_bytes]
+
+        if buffer and self.capture_agent_audio:
             session_name = str(self._get_config_val("session", "") or "")
             session_id = Common._get_session_id(session_name) or str(
                 uuid.uuid4()
@@ -687,13 +1180,23 @@ class BidiSessionHandler:
                     wav_file.setnchannels(1)
                     wav_file.setsampwidth(2)
                     wav_file.setframerate(16000)
-                    wav_file.writeframes(buffer_copy)
+                    wav_file.writeframes(buffer)
                 self.turn_audio_paths[turn_index] = wav_filename
                 logging.info(f"Wrote agent turn audio to {wav_filename}")
             except Exception as audio_err:
                 logging.error(
                     f"Failed to write WAV file {wav_filename}: {audio_err}"
                 )
+
+        if turn_index in self.turn_audio_paths:
+            return {0: self.turn_audio_paths[turn_index]}
+        return {}
+
+    def _save_and_increment_agent_audio(self) -> None:
+        with self.audio_lock:
+            turn_index = self.current_agent_turn_idx
+            self.current_agent_turn_idx += 1
+        self._save_agent_audio_for_index(turn_index)
 
     def _on_open(self, ws: typing.Any) -> None:
         logging.debug("WebSocket connection opened")
@@ -752,9 +1255,104 @@ class BidiSessionHandler:
             )
             response = types.BidiSessionServerMessage(response_pb)
 
+            has_interruption = False
+            barge_in_val = False
+            sig = getattr(response, "interruption_signal", None)
+            if sig is not None and (
+                (
+                    getattr(response, "_pb", None)
+                    and response._pb.HasField("interruption_signal")
+                )
+                or bool(sig)
+            ):
+                has_interruption = True
+                barge_in_val = bool(getattr(sig, "barge_in", False))
+            raw_sig = message_dict.get(
+                "interruptionSignal"
+            ) or message_dict.get("interruption_signal")
+            if raw_sig is not None:
+                has_interruption = True
+                if isinstance(raw_sig, dict):
+                    barge_in_val = bool(
+                        raw_sig.get(
+                            "bargeIn", raw_sig.get("barge_in", barge_in_val)
+                        )
+                    )
+                elif isinstance(raw_sig, bool):
+                    barge_in_val = raw_sig
+
+            if has_interruption:
+                logging.info(
+                    "Received server interruption_signal (barge-in=%s)",
+                    barge_in_val,
+                )
+                self.agent_turn_manager.mark_interrupted(barge_in=barge_in_val)
+
             if response.session_output:
-                if self.interactive and self._should_skip_output(response):
+                if (
+                    self.interactive or self._barge_in_pair_active
+                ) and self._is_empty_output(response.session_output):
+                    logging.debug(
+                        "Ignoring empty/silent server response packet."
+                    )
                     return
+
+                turn_idx = response.session_output.turn_index
+                self.max_server_turn_idx = max(
+                    self.max_server_turn_idx, turn_idx
+                )
+
+                if (
+                    self._barge_in_pair_active
+                    and not self._self_terminated_transfer
+                    and self._output_ends_session(response.session_output)
+                ):
+                    self._self_terminated_transfer = True
+                    self.next_turn_completed_flag = True
+
+                if (
+                    self._barge_in_pair_active
+                    and self._turn_n_server_idx is None
+                    and turn_idx
+                    >= (self.agent_turn_manager.current_turn_index or 1)
+                ):
+                    self._turn_n_server_idx = turn_idx
+
+                if (
+                    self._barge_in_pair_active
+                    and self._turn_n_server_idx is not None
+                    and turn_idx > self._turn_n_server_idx
+                ):
+                    with self._barge_in_lock:
+                        self.outputs.append(response.session_output)
+                        self.next_turn_outputs.append(response.session_output)
+                        with self.audio_lock:
+                            next_idx = self.current_agent_turn_idx + 1
+                            if next_idx not in self.turn_audio_buffers:
+                                self.turn_audio_buffers[next_idx] = bytearray()
+                            if response.session_output.audio:
+                                self.turn_audio_buffers[next_idx].extend(
+                                    response.session_output.audio
+                                )
+                        if response.session_output.turn_completed:
+                            self.next_turn_completed_flag = True
+
+                        if self._barge_in_phase == "turn_n1":
+                            if response.session_output.audio:
+                                self.agent_turn_manager.add_audio(
+                                    response.session_output.audio
+                                )
+                            if response.session_output.turn_completed:
+                                self.agent_turn_manager.mark_turn_completed()
+                    return
+
+                if self.interactive and not (
+                    self.agent_turn_manager.update_turn_index(turn_idx)
+                ):
+                    return
+
+                if self.interactive:
+                    self.agent_turn_manager.is_welcome_turn = turn_idx <= 1
 
                 self.outputs.append(response.session_output)
                 self.current_turn_outputs.append(response.session_output)
@@ -785,63 +1383,17 @@ class BidiSessionHandler:
                     )
                     self.agent_turn_manager.mark_turn_completed()
 
-                    # Multi-stream mode defers the WAV save and turn-index
-                    # increment to the sender thread once the agent has
-                    # fully finished speaking: multi-part responses fire
-                    # turn_completed multiple times and would chop the
-                    # audio here.
-                    if not self.interactive:
+                    if not self.interactive or self._defer_turn_flush:
                         return
 
-                    # Get the active buffer
-                    buffer = self.turn_audio_buffers.get(
-                        self.current_agent_turn_idx, b""
+                    turn_audio_path = self._save_agent_audio_for_index(
+                        self.current_agent_turn_idx
                     )
-                    if buffer and self.capture_agent_audio:
-                        session_name = str(
-                            self._get_config_val("session", "") or ""
-                        )
-                        session_id = Common._get_session_id(
-                            session_name
-                        ) or str(uuid.uuid4())
-                        current_turn = (
-                            self.turn_num or 0
-                        ) + self.current_agent_turn_idx
-                        os.makedirs(
-                            f"/tmp/scrapi_evals/{session_id}", exist_ok=True
-                        )
-                        wav_filename = (
-                            f"/tmp/scrapi_evals/{session_id}/"
-                            f"turn_{current_turn}_agent.wav"
-                        )
-
-                        try:
-                            with wave.open(wav_filename, "wb") as wav_file:
-                                wav_file.setnchannels(1)
-                                wav_file.setsampwidth(2)
-                                wav_file.setframerate(16000)
-                                wav_file.writeframes(buffer)
-                            self.turn_audio_paths[
-                                self.current_agent_turn_idx
-                            ] = wav_filename
-                            logging.info(
-                                f"Wrote agent turn audio to {wav_filename}"
-                            )
-                        except Exception as audio_err:
-                            logging.error(
-                                f"Failed to write WAV file {wav_filename}:"
-                                f" {audio_err}"
-                            )
 
                     if self.response_queue is not None:
                         original_response = types.RunSessionResponse(
                             outputs=list(self.current_turn_outputs)
                         )
-                        turn_audio_path = {}
-                        idx = self.current_agent_turn_idx
-                        if idx in self.turn_audio_paths:
-                            turn_audio_path[0] = self.turn_audio_paths[idx]
-
                         turn_response = ScrapiRunSessionResponse(
                             original_response=original_response,
                             agent_audio_paths=turn_audio_path,
@@ -899,40 +1451,39 @@ class BidiSessionHandler:
             return False
         return payload_ends_session(expand_pb_struct(payload))
 
+    def _is_empty_output(self, session_output: typing.Any) -> bool:
+        """Checks if a session_output is an empty comfort-noise/ack packet."""
+        if not session_output:
+            return True
+        if getattr(session_output, "turn_completed", False):
+            return False
+        if bool(getattr(session_output, "text", None)):
+            return False
+        if bool(getattr(session_output, "payload", None)):
+            return False
+        diag = getattr(session_output, "diagnostic_info", None)
+        if diag and (
+            getattr(diag, "messages", None)
+            or (
+                getattr(diag, "root_span", None)
+                and getattr(diag.root_span, "child_spans", None)
+            )
+        ):
+            return False
+        audio = getattr(session_output, "audio", None)
+        if audio:
+            rms = self.agent_turn_manager._calculate_rms(audio)
+            if rms >= VAD_RMS_THRESHOLD:
+                return False
+        return True
+
     def _should_skip_output(self, response: typing.Any) -> bool:
         """Filters comfort-noise/ack packets and stale-turn output.
 
         Only used in single-stream mode, where the persistent connection
         also carries keepalive silence and out-of-turn packets.
         """
-        # Check if this is an empty comfort noise or variables ack packet
-        has_text = bool(response.session_output.text)
-        has_diag_messages = False
-        diag = response.session_output.diagnostic_info
-        if diag and diag.messages:
-            has_diag_messages = True
-
-        has_execution = False
-        if diag and diag.root_span and diag.root_span.child_spans:
-            has_execution = True
-
-        has_audio_energy = False
-        if response.session_output.audio:
-            rms = self.agent_turn_manager._calculate_rms(
-                response.session_output.audio
-            )
-            if rms >= VAD_RMS_THRESHOLD:
-                has_audio_energy = True
-
-        is_empty_response = (
-            not response.session_output.turn_completed
-            and not has_text
-            and not has_diag_messages
-            and not has_execution
-            and not has_audio_energy
-        )
-
-        if is_empty_response:
+        if self._is_empty_output(response.session_output):
             logging.debug("Ignoring empty/silent server response packet.")
             return True
 
@@ -1136,15 +1687,12 @@ class BidiInteractiveSession:
         # websocket is opened.
         time.sleep(0.5)
 
-    def send_turn(
+    def _prepare_turn_input(
         self,
         text: str,
         variables: dict[str, Any] | None = None,
         audio_bytes: bytes | None = None,
-    ) -> Any:
-        """Sends a user query (via raw audio bytes, event/dtmf, or TTS) and
-        returns the agent's turn response.
-        """
+    ) -> list[dict[str, Any]]:
         if self.sessions_client.rate_limiter:
             self.sessions_client.rate_limiter.wait_and_consume()
 
@@ -1155,19 +1703,22 @@ class BidiInteractiveSession:
             }
             if variables:
                 audio_payload["variables"] = variables
-            self.input_queue.put({"audio": audio_payload})
+            return [{"audio": audio_payload}]
         elif text.startswith("event:"):
             event_name = text[len("event:") :].strip()
+            items: list[dict[str, Any]] = []
             if variables:
-                self.input_queue.put({"variables": variables})
-            self.input_queue.put({"event": {"event": event_name}})
+                items.append({"variables": variables})
+            items.append({"event": {"event": event_name}})
+            return items
         elif text.startswith("dtmf:"):
             dtmf_digits = text[len("dtmf:") :].strip()
+            items = []
             if variables:
-                self.input_queue.put({"variables": variables})
-            self.input_queue.put({"dtmf": dtmf_digits})
+                items.append({"variables": variables})
+            items.append({"dtmf": dtmf_digits})
+            return items
         else:
-            # Convert text to TTS audio bytes
             audio_transformer = AudioTransformer()
             lang_code = "en-US"
             if variables and "locale" in variables:
@@ -1191,17 +1742,95 @@ class BidiInteractiveSession:
             }
             if variables:
                 audio_payload["variables"] = variables
+            return [{"audio": audio_payload}]
 
-            # Put in queue
-            self.input_queue.put({"audio": audio_payload})
+    def send_turn(
+        self,
+        text: str,
+        variables: dict[str, Any] | None = None,
+        audio_bytes: bytes | None = None,
+    ) -> Any:
+        """Sends a user query (via raw audio bytes, event/dtmf, or TTS) and
+        returns the agent's turn response.
+        """
+        input_items = self._prepare_turn_input(
+            text, variables=variables, audio_bytes=audio_bytes
+        )
+        for item in input_items:
+            self.input_queue.put(item)
 
-        # Block wait for the response with timeout
         try:
             response = self.response_queue.get(timeout=90)
+            if isinstance(response, dict) and "connection_error" in response:
+                conn_err = response["connection_error"]
+                raise BidiSessionError(
+                    f"CXAS bidi connection error: {conn_err}",
+                    close_status_code=response.get("close_status_code"),
+                    close_msg=response.get("close_msg"),
+                )
             return response
         except queue.Empty as err:
             logging.error(
                 "Timeout waiting for agent turn response in "
+                "BidiInteractiveSession"
+            )
+            raise TimeoutError(
+                "Timeout waiting for agent response via WebSocket"
+            ) from err
+
+    def send_turn_with_barge_in(
+        self,
+        text: str,
+        barge_in_text: str,
+        barge_in_after_ms: int,
+        variables: dict[str, Any] | None = None,
+        barge_in_variables: dict[str, Any] | None = None,
+        audio_bytes: bytes | None = None,
+        barge_in_audio_bytes: bytes | None = None,
+    ) -> tuple[Any, Any]:
+        """Sends Turn N and schedules Turn N+1 to interrupt after
+        barge_in_after_ms.
+        """
+        turn_n = self._prepare_turn_input(
+            text, variables=variables, audio_bytes=audio_bytes
+        )
+        turn_n1 = self._prepare_turn_input(
+            barge_in_text,
+            variables=barge_in_variables,
+            audio_bytes=barge_in_audio_bytes,
+        )
+        self.input_queue.put(
+            {
+                "turn": turn_n,
+                "barge_in_next": turn_n1,
+                "barge_in_after_ms": barge_in_after_ms,
+            }
+        )
+        try:
+            resp_n = self.response_queue.get(timeout=90)
+            if isinstance(resp_n, dict):
+                if "connection_error" in resp_n:
+                    conn_err = resp_n["connection_error"]
+                    raise BidiSessionError(
+                        f"CXAS bidi connection error: {conn_err}",
+                        close_status_code=resp_n.get("close_status_code"),
+                        close_msg=resp_n.get("close_msg"),
+                    )
+                if resp_n.get("session_ended"):
+                    return resp_n, None
+
+            resp_n1 = self.response_queue.get(timeout=90)
+            if isinstance(resp_n1, dict) and "connection_error" in resp_n1:
+                conn_err = resp_n1["connection_error"]
+                raise BidiSessionError(
+                    f"CXAS bidi connection error: {conn_err}",
+                    close_status_code=resp_n1.get("close_status_code"),
+                    close_msg=resp_n1.get("close_msg"),
+                )
+            return resp_n, resp_n1
+        except queue.Empty as err:
+            logging.error(
+                "Timeout waiting for barge-in responses in "
                 "BidiInteractiveSession"
             )
             raise TimeoutError(
@@ -1624,6 +2253,7 @@ class Sessions(Common):
         use_tool_fakes: bool = True,
         skip_playback_wait: bool = True,
         voice_config: dict[str, Any] | None = None,
+        historical_contexts: Any | None = None,
     ) -> BidiInteractiveSession:
         """Creates and returns a new BidiInteractiveSession instance."""
         if self.rate_limiter:
@@ -1651,6 +2281,8 @@ class Sessions(Common):
                 sample_rate_hertz=SAMPLE_RATE,
             ),
         }
+        if historical_contexts is not None:
+            config["historical_contexts"] = historical_contexts
         dep_id = deployment_id or self.deployment_id
         if dep_id:
             config["deployment"] = f"{self.app_name}/deployments/{dep_id}"

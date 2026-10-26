@@ -84,6 +84,7 @@ class Step(pydantic.BaseModel):
     success_criteria: str = ""
     response_guide: str = ""
     max_turns: int = 0
+    barge_in_after_ms: int | None = None
 
     static_utterance: str = ""
     # Variable injects are only supported for the first step
@@ -291,6 +292,16 @@ class LLMUserConversation(Conversation):
                 return i
         return None
 
+    def peek_barge_in_after_ms(self) -> int | None:
+        """Returns barge_in_after_ms for the next active step, if configured."""
+        if not self._check_conversation_status():
+            return None
+        active_idx = self._get_active_step_index()
+        if active_idx is not None:
+            step = self.steps_progress[active_idx].step
+            return step.barge_in_after_ms
+        return None
+
     def _prepare_llm_prompt(self) -> str:
         """Prepares the prompt for the LLM user."""
         step_list = self.test_case["steps"]
@@ -351,6 +362,20 @@ class LLMUserConversation(Conversation):
                 )
                 merged_vars = {**session_params, **inject_vars}
                 return utterance, merged_vars
+            elif (
+                active_step_prog.step.barge_in_after_ms is not None
+                and not getattr(self, "genai_client", None)
+            ):
+                active_step_prog.status = StepStatus.COMPLETED
+                active_step_prog.justification = (
+                    "Interruption utterance generated from goal/guide."
+                )
+                utterance = (
+                    active_step_prog.step.response_guide
+                    or active_step_prog.step.goal
+                    or "Excuse me"
+                )
+                return utterance, {}
 
         prompt = self._prepare_llm_prompt()
 
@@ -362,10 +387,47 @@ class LLMUserConversation(Conversation):
         )
 
         if output:
+            orig_steps = self.test_case.get("steps", [])
+            for i, prog in enumerate(output.step_progresses):
+                if i < len(orig_steps):
+                    orig = orig_steps[i]
+                    if isinstance(orig, dict):
+                        if (
+                            "barge_in_after_ms" in orig
+                            and prog.step.barge_in_after_ms is None
+                        ):
+                            prog.step.barge_in_after_ms = orig[
+                                "barge_in_after_ms"
+                            ]
+                        if (
+                            "static_utterance" in orig
+                            and not prog.step.static_utterance
+                        ):
+                            prog.step.static_utterance = orig[
+                                "static_utterance"
+                            ]
+                        if (
+                            "inject_variables" in orig
+                            and not prog.step.inject_variables
+                        ):
+                            prog.step.inject_variables = orig[
+                                "inject_variables"
+                            ]
             self.steps_progress = output.step_progresses
             return output.next_user_utterance, {}
 
         return "", {}
+
+    def generate_barge_in_utterance(self) -> tuple[str, dict[str, Any]]:
+        """Generates the next user utterance for barge-in without adding it to
+        transcript.
+        """
+        return self._next_user_utterance()
+
+    def record_user_utterance(self, utterance: str) -> None:
+        """Records a user utterance to transcript and advances current turn."""
+        self._add_user_utterance(utterance)
+        self.current_turn += 1
 
     def next_user_utterance(
         self, last_agent_response: str = ""
@@ -374,8 +436,7 @@ class LLMUserConversation(Conversation):
         if last_agent_response:
             self._add_agent_response(last_agent_response)
         next_user_utterance, variables_to_inject = self._next_user_utterance()
-        self._add_user_utterance(next_user_utterance)
-        self.current_turn += 1
+        self.record_user_utterance(next_user_utterance)
         return next_user_utterance, variables_to_inject
 
     def generate_report(self) -> Any:
@@ -469,7 +530,24 @@ def cleanup_session_dir(func: typing.Any) -> typing.Any:
         try:
             return func(*bound.args, **bound.kwargs)
         finally:
-            shutil.rmtree(f"/tmp/scrapi_evals/{session_id}", ignore_errors=True)
+            try:
+                if bound.arguments.get("capture_agent_audio"):
+                    output_dir = bound.arguments.get("output_dir")
+                    if output_dir:
+                        dest_dir = os.path.join(output_dir, session_id)
+                        os.makedirs(dest_dir, exist_ok=True)
+                        src_dir = f"/tmp/scrapi_evals/{session_id}"
+                        if os.path.exists(src_dir):
+                            for fname in os.listdir(src_dir):
+                                if fname.endswith(".wav"):
+                                    shutil.copy2(
+                                        os.path.join(src_dir, fname),
+                                        os.path.join(dest_dir, fname),
+                                    )
+            finally:
+                shutil.rmtree(
+                    f"/tmp/scrapi_evals/{session_id}", ignore_errors=True
+                )
 
     return wrapper
 
@@ -884,6 +962,19 @@ class SimulationEvals(Apps):
         eval_conv.agent_audio_paths = {}
         current_sim_turn = 0
 
+        has_barge_in_step = any(
+            isinstance(s, dict) and s.get("barge_in_after_ms") is not None
+            for s in test_case.get("steps", [])
+        )
+        if has_barge_in_step and modality != "audio":
+            logging.warning(
+                "Test case has barge_in_after_ms configured, but modality is "
+                f"'{modality}'. Barge-in evaluation requires audio modality."
+            )
+        if has_barge_in_step and modality == "audio":
+            single_bidi_stream = True
+            skip_playback_wait = False
+
         interactive_session = None
         if modality == "audio" and single_bidi_stream:
             client = self.sessions_client
@@ -915,7 +1006,99 @@ class SimulationEvals(Apps):
             turn_traces: list[dict[str, Any]] = []
 
             while user_utterance:
-                if modality == "audio" and interactive_session:
+                barge_in_offset = (
+                    eval_conv.peek_barge_in_after_ms()
+                    if hasattr(eval_conv, "peek_barge_in_after_ms")
+                    else None
+                )
+                if (
+                    modality == "audio"
+                    and interactive_session
+                    and isinstance(barge_in_offset, int)
+                ):
+                    barge_in_utterance, barge_in_vars = (
+                        eval_conv.generate_barge_in_utterance()
+                    )
+                    barge_vars = accumulated_variables.copy()
+                    if barge_in_vars:
+                        barge_vars.update(barge_in_vars)
+
+                    resp_n, response = (
+                        interactive_session.send_turn_with_barge_in(
+                            text=user_utterance,
+                            barge_in_text=barge_in_utterance,
+                            barge_in_after_ms=barge_in_offset,
+                            variables=accumulated_variables,
+                            barge_in_variables=barge_vars,
+                        )
+                    )
+
+                    if isinstance(resp_n, dict) and resp_n.get("session_ended"):
+                        if resp_n.get("connection_error"):
+                            err_msg = (
+                                "Interactive session WebSocket error: "
+                                f"{resp_n['connection_error']}"
+                            )
+                            raise BidiSessionError(err_msg)
+                        break
+
+                    if resp_n and getattr(resp_n, "agent_audio_paths", None):
+                        audio_path_n = resp_n.agent_audio_paths.get(0)
+                        if audio_path_n:
+                            eval_conv.agent_audio_paths[current_sim_turn] = (
+                                audio_path_n
+                            )
+
+                    agent_text_n, trace_chunks_n, _, tool_calls_n = (
+                        self._parse_agent_response(resp_n)
+                    )
+                    parsed_n = ParsedSessionResponse(resp_n)
+                    if (
+                        parsed_n.barge_in_metadata
+                        and parsed_n.barge_in_metadata.interrupted
+                    ):
+                        heard = parsed_n.barge_in_metadata.estimated_heard_text
+                        eval_conv._add_agent_response(
+                            f"{heard}... [interrupted]"
+                        )
+                    elif agent_text_n:
+                        eval_conv._add_agent_response(agent_text_n)
+
+                    eval_conv._add_agent_tool_calls(tool_calls_n)
+                    detailed_trace.append("\n".join(trace_chunks_n))
+                    turn_root_span_n = ParsedSessionResponse.extract_root_span(
+                        resp_n
+                    )
+                    if isinstance(turn_root_span_n, dict) and turn_root_span_n:
+                        turn_traces.append(
+                            {
+                                "turn_index": current_sim_turn,
+                                "user_utterance": user_utterance,
+                                "agent_text": agent_text_n,
+                                "root_span": turn_root_span_n,
+                            }
+                        )
+                    current_sim_turn += 1
+
+                    eval_conv.record_user_utterance(barge_in_utterance)
+                    detailed_trace.append(
+                        f"User: [Barge-In] {barge_in_utterance}"
+                    )
+
+                    if isinstance(response, dict) and response.get(
+                        "session_ended"
+                    ):
+                        if response.get("connection_error"):
+                            err_msg = (
+                                "Interactive session WebSocket error: "
+                                f"{response['connection_error']}"
+                            )
+                            raise BidiSessionError(err_msg)
+                        break
+
+                    user_utterance = barge_in_utterance
+                    accumulated_variables = barge_vars
+                elif modality == "audio" and interactive_session:
                     response = interactive_session.send_turn(
                         user_utterance,
                         accumulated_variables,
