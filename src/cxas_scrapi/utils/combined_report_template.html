@@ -1,8 +1,456 @@
 {# pyre-ignore-all-errors #}
-<h1>
-  <span>Combined Eval Report</span>
-  <button type="button" class="theme-toggle-btn" onclick="toggleTheme()">🌗 Toggle Light / Dark Theme</button>
-</h1>
+{% macro render_trend_svg(chart) %}
+{% if not chart %}
+<div class="empty" style="padding:24px;text-align:center;color:var(--muted);">No turn data available</div>
+{% else %}
+<svg width="100%" viewBox="0 0 {{ chart.w }} {{ chart.view_h }}" role="img" aria-label="Perceived latency p50 and p90 over turns" style="overflow:visible;">
+  {% for g in chart.grid_lines %}
+  <line x1="{{ g.x1 }}" x2="{{ g.x2 }}" y1="{{ g.y }}" y2="{{ g.y }}" stroke="{{ g.stroke }}" stroke-width="1"/>
+  <text x="{{ g.text_x }}" y="{{ g.text_y }}" text-anchor="end" font-size="11" fill="var(--muted)" class="num">{{ g.label }}</text>
+  {% endfor %}
+  {% for s in chart.series %}
+  <path d="{{ s.d }}" fill="none" stroke="{{ s.color }}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+  {% for dot in s.dots %}
+  <circle cx="{{ dot.cx }}" cy="{{ dot.cy }}" r="3" fill="var(--surface)" stroke="{{ s.color }}" stroke-width="2"/>
+  {% endfor %}
+  <text x="{{ s.last_x }}" y="{{ s.last_y }}" font-size="12" font-weight="600" fill="var(--ink)">{{ s.last_val_fmt }}</text>
+  {% endfor %}
+  <text x="{{ chart.pad_l }}" y="{{ chart.turns_label_y }}" font-size="11" fill="var(--muted)">Turns</text>
+  <text x="{{ chart.pad_l - 8 }}" y="{{ chart.nmax_y }}" text-anchor="end" font-size="11" fill="var(--muted)" class="num">{{ chart.nmax }}</text>
+  {% for b in chart.bars %}
+  <rect x="{{ b.x }}" y="{{ b.y }}" width="{{ b.width }}" height="{{ b.height }}" rx="2" fill="var(--muted)" opacity="0.35"/>
+  <text x="{{ b.text_x }}" y="{{ b.text_y }}" text-anchor="middle" font-size="11" fill="var(--muted)">{{ b.label }}</text>
+  {% endfor %}
+  {% for h in chart.hits %}
+  <rect class="hit" data-turn="{{ h.turn_num }}" data-label="{{ h.label }}" data-p50="{{ h.p50_s }}" data-p90="{{ h.p90_s }}" data-p95="{{ h.p95_s }}" data-turns="{{ h.turns }}" data-evals="{{ h.calls }}" x="{{ h.x }}" y="{{ h.y }}" width="{{ h.width }}" height="{{ h.height }}" fill="transparent"><title>{{ h.title }}</title></rect>
+  {% endfor %}
+</svg>
+{% endif %}
+{% endmacro %}
+
+{% macro render_suite_latency(suite_pl, trend_chart, _fmt_ms, _pl_status_cls) %}
+{% if suite_pl and suite_pl.get("primary") %}
+{% set prim = suite_pl["primary"] %}
+{% set slices = suite_pl.get("slices", {}) %}
+{% set active_key = suite_pl.get("primary_slice_key", "user_turns") %}
+{% set p50_cls = _pl_status_cls(prim.get("p50_ms")) %}
+{% set p90_cls = _pl_status_cls(prim.get("p90_ms")) %}
+{% set p50_m = _fmt_ms(prim.get("p50_ms")) %}
+{% set p90_m = _fmt_ms(prim.get("p90_ms")) %}
+{% set avg_m = _fmt_ms(prim.get("avg_ms")) %}
+{% set total_turns = (suite_pl.get("total_turns", 0) or 0) | int %}
+{% set conv_cnt = (suite_pl.get("conversations_count", 0) or 0) | int %}
+{% set mod_lbl = suite_pl.get("modality_label", "voice") or "voice" %}
+
+<details class="pl-suite-details latency-drawer" id="section-latency" open>
+  <summary>
+    <span><span class="pl-arrow">&#9654;</span>⏱ <b>Perceived Latency &amp; Bottleneck Analysis</b> <span class="meta">(Click to expand pre-speech breakdown, component observations &amp; filler signals)</span></span>
+    <span>
+      <span class="badge {{ p50_cls }}">p50: {{ p50_m }}</span>
+      <span class="badge {{ p90_cls }}">p90: {{ p90_m }}</span>
+      <span class="badge tool">Mean: {{ avg_m }}</span>
+    </span>
+  </summary>
+  <div style="margin-top:10px;padding-top:8px;border-top:1px solid var(--border-subtle);">
+    <div class="sub" id="lat-n" style="margin-bottom:12px;font-size:13px;color:var(--muted);">
+      {{ "{:,}".format(total_turns) }} turns across {{ "{:,}".format(conv_cnt) }} evaluations · {{ mod_lbl }}
+    </div>
+
+    {% if suite_pl.get("kpi_tiles") %}
+    <div class="tiles">
+      {% for tile in suite_pl.get("kpi_tiles", []) %}
+        <div class="tile{% if tile.get('status_cls') %} {{ tile.get('status_cls') }}{% endif %}">
+          <div class="t-lbl">{{ tile.get("label", "") }}</div>
+          <div class="t-val">{{ tile.get("value", "") }}</div>
+          <div class="t-sub">{{ tile.get("meta", "") }}</div>
+        </div>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="card" id="lat-trend" style="margin-top:14px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px;">
+        <h3 style="margin:0;">Perceived latency by turn</h3>
+        <div class="legend" style="display:flex;gap:12px;font-size:12px;color:var(--muted);">
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:var(--accent);display:inline-block;"></span> p50</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;border-radius:50%;background:var(--serious);display:inline-block;"></span> p90</span>
+          <span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:10px;height:10px;background:var(--muted);opacity:0.35;display:inline-block;border-radius:2px;"></span> Turn volume</span>
+        </div>
+      </div>
+      <div class="chart-wrap" style="position:relative;">
+        {{ render_trend_svg(trend_chart) }}
+      </div>
+    </div>
+
+    {% if suite_pl.get("metrics_tables") %}
+    <div class="card" style="margin-top:14px;">
+      <h3 style="margin:0 0 10px 0;">Latency metrics</h3>
+      {% for mt in suite_pl.get("metrics_tables", []) %}
+        {% if suite_pl.get("metrics_tables", []) | length > 1 %}
+          <h4 style="margin:12px 0 6px 0;font-size:13px;font-weight:600;color:var(--ink);">{{ mt.get("title", "") }}</h4>
+        {% endif %}
+        <table class="tbl" id="lat-tbl" style="margin-bottom:12px;">
+          <thead>
+            <tr><th>Metric</th><th>Target</th><th class="num">Mean</th><th class="num">p50</th><th class="num">p90</th><th class="num">p95</th><th class="num">Max</th><th class="num">N</th></tr>
+          </thead>
+          <tbody>
+            {% for r in mt.get("rows", []) %}
+            <tr>
+              <td>{{ r.get("metric", "") }}</td>
+              <td><span class="meta">{{ r.get("target", "") }}</span></td>
+              <td class="num">{{ r.get("avg", "—") }}</td>
+              <td class="num">{{ r.get("p50", "—") }}</td>
+              <td class="num">{{ r.get("p90", "—") }}</td>
+              <td class="num{% if r.get('cls') %} {{ r.get('cls') }}{% endif %}"><b>{{ r.get("p95", "—") }}</b></td>
+              <td class="num">{{ r.get("max", "—") }}</td>
+              <td class="num meta">{{ r.get("n", "—") }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% endfor %}
+    </div>
+    {% endif %}
+
+    <div class="grid g2" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(320px,1fr));gap:12px;margin-top:14px;">
+      <div class="card">
+        <h3 style="margin:0 0 10px 0;">Where a turn's time goes</h3>
+        <div id="lat-parts" class="bars">
+          {% if suite_pl.get("turn_parts") %}
+            {% for p in suite_pl.get("turn_parts", []) %}
+              {% set p_w = (p.get("pct_width", 0.0) or 0.0) | float %}
+              {% set w_val = 100.0 if p_w > 100.0 else (0.5 if p_w < 0.5 else p_w) %}
+              <div class="bar" style="margin-bottom:8px;">
+                <div class="bar-lbl" style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:2px;">
+                  <span>{{ p.get("label", "") }}</span>
+                  <b>{{ p.get("dur_fmt", "") }}{% if p.get("pct_span_time") %} <span class="meta">· {{ p.get("pct_span_time") }}</span>{% endif %}</b>
+                </div>
+                <div class="bar-track" style="height:6px;background:var(--surface-2);border-radius:3px;overflow:hidden;">
+                  <div class="bar-fill" style="width:{{ "%.1f" | format(w_val) }}%;background:var({{ p.get("color_var", "--accent") }});height:100%;border-radius:3px;"></div>
+                </div>
+              </div>
+            {% endfor %}
+          {% else %}
+            <div class="empty" style="color:var(--muted);font-size:12px;">No breakdown data</div>
+          {% endif %}
+        </div>
+      </div>
+      <div class="card">
+        <h3 style="margin:0 0 10px 0;">Tool latency</h3>
+        {% if suite_pl.get("top_tools") %}
+          <table class="tbl" id="lat-tools">
+            <thead>
+              <tr><th>Tool</th><th class="num">Calls</th><th class="num">p50</th><th class="num">p95</th><th class="num">Max</th><th class="num">Share</th></tr>
+            </thead>
+            <tbody>
+              {% for t in suite_pl.get("top_tools", []) %}
+              <tr>
+                <td><code>{{ t.get("name", "") }}</code></td>
+                <td class="num">{{ t.get("calls", 0) }}</td>
+                <td class="num">{{ t.get("p50_fmt", "—") }}</td>
+                <td class="num{% if t.get('p95_critical') %} fail{% endif %}"><b>{{ t.get("p95_fmt", "—") }}</b></td>
+                <td class="num">{{ t.get("max_fmt", "—") }}</td>
+                <td class="num meta">{{ t.get("share_pct", "0%") }}</td>
+              </tr>
+              {% endfor %}
+              {% if suite_pl.get("overflow_summary") %}
+                {% set overflow = suite_pl.get("overflow_summary") %}
+                <tr><td colspan="6" class="meta" style="font-size:11px;padding:6px 10px;">+ {{ overflow.get("remaining_count", 0) }} more tools ({{ overflow.get("share_pct", "") }} total tool time)</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        {% else %}
+          <div class="empty" style="color:var(--muted);font-size:12px;padding:12px 0;">No tools invoked</div>
+        {% endif %}
+      </div>
+    </div>
+
+    {% if suite_pl.get("slowest_evals") %}
+    <div class="card" style="margin-top:14px;">
+      <h3 style="margin:0 0 10px 0;">Slowest evaluations</h3>
+      <table class="tbl" id="lat-slow">
+        <thead>
+          <tr><th>Evaluation</th><th class="num">Turns</th><th class="num">Median turn</th><th>Slowest turn</th><th>Turn breakdown</th></tr>
+        </thead>
+        <tbody>
+          {% for se in suite_pl.get("slowest_evals", []) %}
+            {% set e_nm = se.get("name", "") %}
+            {% set e_type = se.get("eval_type", "sim") %}
+            {% set jump_arg_type = "golden" if e_type == "golden" else "sim" %}
+            <tr>
+              <td>
+                <a href="javascript:void(0)" onclick="jumpTo('{{ jump_arg_type }}', '{{ e_nm | replace("'", "\\'") }}')" style="color:var(--accent);text-decoration:none;font-weight:600;">{{ e_nm }}</a>
+                <span class="badge {{ jump_arg_type }}">{{ e_type }}</span>
+              </td>
+              <td class="num">{{ se.get("turns_count", 0) }}</td>
+              <td class="num">{{ se.get("median_turn_fmt", "—") }}</td>
+              <td><b>Turn {{ se.get("slowest_turn_num", 1) }}</b> <span class="meta">({{ se.get("slowest_turn_fmt", "—") }})</span></td>
+              <td><span class="meta">{{ se.get("breakdown_str", "") }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% endif %}
+
+    <div style="margin-top:18px;padding-top:12px;border-top:1px solid var(--border-subtle);">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:6px;margin-bottom:6px;">
+        <span class="meta">Clock: <code>VAD.endTime</code> &rarr; First Audio (<code>startTime + TTFA</code>)</span>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          {% set slice_order = [("user_turns", "User Turns"), ("event_turns", "Event / System Turns"), ("all_turns", "All Turns")] %}
+          {% for skey, s_default_label in slice_order %}
+            {% set sdata = slices.get(skey) %}
+            {% if sdata and sdata.get("total_turns", 0) > 0 %}
+              {% set is_active = (skey == active_key) %}
+              {% set btn_cls = "pl-slice-btn active" if is_active else "pl-slice-btn" %}
+              {% set spoken_cnt = sdata.get("spoken_count", 0) %}
+              {% set silent_cnt = sdata.get("silent_count", 0) %}
+              {% set cnt_lbl = (spoken_cnt ~ " spoken, " ~ silent_cnt ~ " silent") if silent_cnt > 0 else (spoken_cnt ~ "") %}
+              <button type="button" class="{{ btn_cls }}" id="pl-btn-{{ skey }}" onclick="switchPlSlice('{{ skey }}')">{{ s_default_label }} ({{ cnt_lbl }})</button>
+            {% endif %}
+          {% endfor %}
+        </div>
+      </div>
+
+      {% for skey, s_default_label in slice_order %}
+        {% set sdata = slices.get(skey) %}
+        {% if sdata and sdata.get("total_turns", 0) > 0 %}
+          {% set is_active = (skey == active_key) %}
+          {% set disp = "block" if is_active else "none" %}
+          {% set st = sdata.get("stack", {}) %}
+          {% set slo_under_2s = (100.0 - (sdata.get("over_2s_pct", 0.0) | float)) | round(1) %}
+          {% set slo_cls = "pass" if slo_under_2s >= 80 else ("warn" if slo_under_2s >= 50 else "fail") %}
+          {% set avg_c = _pl_status_cls(sdata.get("avg_ms")) %}
+          {% set p50_c = _pl_status_cls(sdata.get("p50_ms")) %}
+          {% set p90_c = _pl_status_cls(sdata.get("p90_ms")) %}
+          {% set avg_s = _fmt_ms(sdata.get("avg_ms")) %}
+          {% set unm_s = _fmt_ms(sdata.get("unmasked_avg_ms")) %}
+          {% set p50_s = _fmt_ms(sdata.get("p50_ms")) %}
+          {% set p90_s = _fmt_ms(sdata.get("p90_ms")) %}
+          {% set max_s = _fmt_ms(sdata.get("max_ms")) %}
+          {% set u1_pct = sdata.get("under_1s_pct", 0) %}
+          {% set o3_pct = sdata.get("over_3s_pct", 0) %}
+          {% set f_cnt = sdata.get("filler_masked_count", 0) %}
+          {% set f_sav = _fmt_ms(sdata.get("filler_saved_avg_ms", 0)) %}
+          {% set s_lbl = sdata.get("label", "") %}
+
+          {% set cb_w = 0.0 if st.get("callback_pct", 0) < 0 else st.get("callback_pct", 0) %}
+          {% set cb_m = _fmt_ms(st.get("callback_ms", 0)) %}
+          {% set cb_p = st.get("callback_pct", 0) %}
+
+          {% set tl_w = 0.0 if st.get("tool_pct", 0) < 0 else st.get("tool_pct", 0) %}
+          {% set tl_m = _fmt_ms(st.get("tool_ms", 0)) %}
+          {% set tl_p = st.get("tool_pct", 0) %}
+
+          {% set lm_w = 0.0 if st.get("llm_ttfc_pct", 0) < 0 else st.get("llm_ttfc_pct", 0) %}
+          {% set lm_m = _fmt_ms(st.get("llm_ttfc_ms", 0)) %}
+          {% set lm_p = st.get("llm_ttfc_pct", 0) %}
+
+          {% set tt_w = 0.0 if st.get("tts_pct", 0) < 0 else st.get("tts_pct", 0) %}
+          {% set tt_m = _fmt_ms(st.get("tts_ms", 0)) %}
+          {% set tt_p = st.get("tts_pct", 0) %}
+
+          {% set ov_w = 0.0 if st.get("overhead_pct", 0) < 0 else st.get("overhead_pct", 0) %}
+          {% set ov_m = _fmt_ms(st.get("overhead_ms", 0)) %}
+          {% set ov_p = st.get("overhead_pct", 0) %}
+
+          <div class="pl-slice-panel" id="pl-slice-{{ skey }}" style="display:{{ disp }};">
+            <div class="pl-overview-card">
+              <div class="pl-kpi-strip">
+                <div class="pl-kpi-item"><span class="kpi-label">Mean PL</span> <b class="{{ avg_c }}">{{ avg_s }}</b> <span class="meta">(unmasked {{ unm_s }})</span></div>
+                <div class="pl-kpi-item"><span class="kpi-label">p50</span> <b class="{{ p50_c }}">{{ p50_s }}</b> <span class="meta">(&lt;1s: {{ "%.0f" | format(u1_pct) }}%)</span></div>
+                <div class="pl-kpi-item"><span class="kpi-label">p90 / Max</span> <b class="{{ p90_c }}">{{ p90_s }}</b> <span class="meta">/ {{ max_s }}</span></div>
+                <div class="pl-kpi-item"><span class="kpi-label">&le;2.0s SLO</span> <b class="{{ slo_cls }}">{{ "%.1f" | format(slo_under_2s) }}%</b> <span class="meta">(&gt;3s: {{ "%.0f" | format(o3_pct) }}%)</span></div>
+                <div class="pl-kpi-item"><span class="kpi-label">Filler Masked</span> <b class="pass">{{ f_cnt }} turns</b> <span class="meta">(saved {{ f_sav }})</span></div>
+              </div>
+              <div class="pl-stack-header">Pre-Speech Critical Path ({{ avg_s }} Mean on {{ s_lbl }})</div>
+              <div class="pl-stack-bar">
+                <div class="pl-seg-cb" style="width:{{ cb_w }}%" title="Callbacks: {{ cb_m }} ({{ "%.1f" | format(cb_p) }}%)"></div>
+                <div class="pl-seg-tool" style="width:{{ tl_w }}%" title="Tools / APIs: {{ tl_m }} ({{ "%.1f" | format(tl_p) }}%)"></div>
+                <div class="pl-seg-sllm" style="width:{{ lm_w }}%" title="LLM: {{ lm_m }} ({{ "%.1f" | format(lm_p) }}%)"></div>
+                <div class="pl-seg-ttfa" style="width:{{ tt_w }}%" title="TTS / Audio: {{ tt_m }} ({{ "%.1f" | format(tt_p) }}%)"></div>
+                <div class="pl-seg-gap" style="width:{{ ov_w }}%" title="Gap / Overhead: {{ ov_m }} ({{ "%.1f" | format(ov_p) }}%)"></div>
+              </div>
+              <div class="pl-stack-legend">
+                <span class="pl-legend-item"><span class="pl-legend-dot cb"></span>Callbacks <b>{{ cb_m }}</b> <span class="meta">({{ "%.0f" | format(cb_p) }}%)</span></span>
+                <span class="pl-legend-item"><span class="pl-legend-dot tool"></span>Tools / APIs <b>{{ tl_m }}</b> <span class="meta">({{ "%.0f" | format(tl_p) }}%)</span></span>
+                <span class="pl-legend-item"><span class="pl-legend-dot sllm"></span>LLM <b>{{ lm_m }}</b> <span class="meta">({{ "%.0f" | format(lm_p) }}%)</span></span>
+                <span class="pl-legend-item"><span class="pl-legend-dot ttfa"></span>TTS <b>{{ tt_m }}</b> <span class="meta">({{ "%.0f" | format(tt_p) }}%)</span></span>
+                <span class="pl-legend-item"><span class="pl-legend-dot gap"></span>Gap / Overhead <b>{{ ov_m }}</b> <span class="meta">({{ "%.0f" | format(ov_p) }}%)</span></span>
+              </div>
+            </div>
+          </div>
+        {% endif %}
+      {% endfor %}
+
+      <h3>🔧 Table A: Pre-Speech Component Breakdown &amp; Signals (Critical Path)</h3>
+      <table>
+        <tr><th>Component / Stage</th><th>Calls (Calls/Turn)</th><th>Mean</th><th>p50</th><th>p90</th><th>Share of Suite PL</th><th>Observation</th></tr>
+        {% for row in suite_pl.get("optimization_targets", [])[:10] %}
+          {% set type_badge = {"LLM": "sim", "Tool / API": "tool", "Callback": "callback", "Guardrail": "golden"}.get(row.get("type", ""), "neutral") %}
+          {% set p90_c = _pl_status_cls(row.get("p90_ms")) %}
+          {% set share_pct = (row.get("share_of_pl_pct", 0.0) or 0.0) | float %}
+          {% set share_cls = "fail" if share_pct >= 15.0 else ("warn" if share_pct >= 5.0 else "") %}
+          {% set cpt = (row.get("calls_per_turn", 0.0) or 0.0) | float %}
+          {% set r_type = row.get("type", "") %}
+          {% set r_agent = row.get("agent", "") %}
+          {% set r_imp = _fmt_ms(row.get("avg_pl_impact_ms")) %}
+          {% set r_obs = row.get("observation", row.get("recommendation", "")) or "" %}
+          {% set sub_cbs = row.get("sub_callbacks") or [] %}
+
+          <tr>
+            <td>
+              <b><code>{{ row.get('component', '') }}</code></b>
+              <span class="badge {{ type_badge }}">{{ r_type }}</span>
+              <br><span class="meta">Agent: {{ r_agent }}</span>
+              {% if sub_cbs %}
+                <details class="cb-sub-details">
+                  <summary><span class="pl-arrow">&#9654;</span>{% if sub_cbs | length == 1 %}1 callback{% else %}{{ sub_cbs | length }} callbacks in order{% endif %}</summary>
+                  <div class="cb-sub-list">
+                    {% for sc in sub_cbs %}
+                      {% set sc_seq = sc.get("seq", 1) %}
+                      {% set sc_nm = sc.get("cb_name", "callback") %}
+                      {% set sc_avg = _fmt_ms(sc.get("avg_ms", 0)) %}
+                      {% set sc_p90 = _fmt_ms(sc.get("p90_ms", 0)) %}
+                      {% set sc_cnt = sc.get("calls", 0) %}
+                      {% set sc_cts = sc.get("child_tools") or [] %}
+                      {% set sc_has_det = (sc.get("has_detailed_latency") or (sc.get("avg_code_ms", 0) or 0) > 0 or (sc.get("avg_sandbox_ms", 0) or 0) > 0) %}
+                      {% set tot_r = (sc.get("avg_ms", 0) | float) | round | int %}
+                      {% set code_r = (sc.get("avg_code_ms", 0) | float) | round | int %}
+                      {% set wait_r = (sc.get("avg_ext_wait_ms", 0) | float) | round | int %}
+                      {% set sbx_r = 0 if (tot_r - code_r - wait_r) < 0 else (tot_r - code_r - wait_r) %}
+                      <div class="cb-sub-item">
+                        <span class="cb-seq-badge">#{{ sc_seq }}</span>
+                        <code>{{ sc_nm }}</code> — avg <b>{{ sc_avg }}</b>{% if sc_has_det %} <span class="meta">(code {{ code_r }}ms{% if wait_r > 0 %} + ext_wait {{ wait_r }}ms{% endif %} + sandbox {{ sbx_r }}ms)</span>{% endif %}, p90 <b>{{ sc_p90 }}</b> <span class="meta">({{ sc_cnt }} calls)</span>{% if sc_cts %} · <span class="meta">&rarr; {% for ct in sc_cts[:3] %}{{ ct['name'] }} ({{ (ct['avg_ms'] | float) | round | int }}ms){% if not loop.last %}, {% endif %}{% endfor %}{% if sc_cts | length > 3 %}, +{{ sc_cts | length - 3 }} more{% endif %}</span>{% endif %}
+                      </div>
+                    {% endfor %}
+                  </div>
+                </details>
+              {% endif %}
+            </td>
+            <td>{{ row.get('calls', 0) }} ({{ "%.2g" | format(cpt) }}&times;/turn)</td>
+            <td><b>{{ _fmt_ms(row.get('avg_ms')) }}</b></td>
+            <td>{{ _fmt_ms(row.get('p50_ms')) }}</td>
+            <td class="{{ p90_c }}"><b>{{ _fmt_ms(row.get('p90_ms')) }}</b></td>
+            <td class="{{ share_cls }}"><b>{{ "%.1f" | format(share_pct) }}%</b> ({{ r_imp }}/turn)</td>
+            <td><span class="meta">{{ r_obs }}</span></td>
+          </tr>
+        {% endfor %}
+      </table>
+
+      {% set cb_decomp = suite_pl.get("callback_decomposition") %}
+      {% if cb_decomp and cb_decomp.get("total_calls", 0) > 0 %}
+        {% set tot_turn_s = _fmt_ms(cb_decomp.get("avg_total_per_turn_ms", 0)) %}
+        {% set cpt_val = (cb_decomp.get("calls_per_turn", 0.0) or 0.0) | float %}
+        {% set tot_calls_val = (cb_decomp.get("total_calls", 0) or 0) | int %}
+        {% set c_ms = _fmt_ms(cb_decomp.get("avg_code_per_turn_ms", 0)) %}
+        {% set c_pct = (cb_decomp.get("code_pct", 0.0) or 0.0) | float %}
+        {% set w_ms = _fmt_ms(cb_decomp.get("avg_ext_wait_per_turn_ms", 0)) %}
+        {% set w_pct = (cb_decomp.get("ext_wait_pct", 0.0) or 0.0) | float %}
+        {% set s_ms = _fmt_ms(cb_decomp.get("avg_sandbox_per_turn_ms", 0)) %}
+        {% set s_pct = (cb_decomp.get("sandbox_pct", 0.0) or 0.0) | float %}
+        {% set s_per_call = _fmt_ms(cb_decomp.get("avg_sandbox_per_call_ms", 0)) %}
+
+        <div class="pl-overview-card" style="margin-top:8px;">
+          <div class="pl-stack-header">
+            <span><b>📦 Callback Time Decomposition</b> <span class="meta">— Why callback span duration exceeds pure Python <code>code</code> time</span></span>
+            <span class="meta">Avg <b>{{ tot_turn_s }}/turn</b> across {{ "%.2g" | format(cpt_val) }} callbacks/turn ({{ "{:,}".format(tot_calls_val) }} total calls)</span>
+          </div>
+          <div class="pl-stack-bar">
+            <div class="pl-seg-cb" style="width:{{ 0.0 if c_pct < 0 else c_pct }}%" title="Pure Python Code: {{ c_ms }}/turn ({{ "%.1f" | format(c_pct) }}%)"></div>
+            {% if w_pct > 0 %}
+              <div class="pl-seg-tool" style="width:{{ 0.0 if w_pct < 0 else w_pct }}%" title="External Tool Wait: {{ w_ms }}/turn ({{ "%.1f" | format(w_pct) }}%)"></div>
+            {% endif %}
+            <div class="pl-seg-gap" style="width:{{ 0.0 if s_pct < 0 else s_pct }}%" title="Sandbox &amp; State IPC Overhead: {{ s_ms }}/turn ({{ "%.1f" | format(s_pct) }}%)"></div>
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:8px;margin-top:6px;font-size:0.78em;">
+            <div><span class="badge callback">code</span> <b>{{ c_ms }}/turn ({{ "%.0f" | format(c_pct) }}%)</b>: Pure Python execution inside the callback sandbox <span class="meta">(<code>total code execution latency - waiting for external calls</code>)</span>.</div>
+            <div><span class="badge tool">ext_wait</span> <b>{{ w_ms }}/turn ({{ "%.0f" | format(w_pct) }}%)</b>: Time paused inside the callback awaiting synchronous tool / OpenAPI calls <span class="meta">(<code>waiting for external calls</code>)</span>.</div>
+            <div><span class="badge neutral">sandbox</span> <b>{{ s_ms }}/turn ({{ "%.0f" | format(s_pct) }}%, ~{{ s_per_call }}/call)</b>: Per-callback sandbox IPC, <code>session.state</code> serialization/diffing &amp; sandbox init <span class="meta">(<code>span_duration - code - ext_wait</code>)</span>.</div>
+          </div>
+        </div>
+      {% endif %}
+
+      {% if suite_pl.get("filler_table") %}
+        <h3>🗣️ Table B: Pre-Speech Tool Masking &amp; Dead-Air Signals</h3>
+        <table>
+          <tr><th>Operation / Tool</th><th>Mean / p90 Dur</th><th>Unmasked Rate</th><th>Post-Filler Dead Air</th><th>Observation</th></tr>
+          {% for frow in suite_pl.get("filler_table", []) %}
+            {% set s_cls = frow.get("status_cls", "neutral") %}
+            {% set default_badge = frow.get('status', '') ~ " (" ~ frow.get('masked_calls', 0) ~ "/" ~ frow.get('calls', 0) ~ " Masked)" %}
+            {% set badge_lbl = frow.get("badge_label", default_badge) %}
+            {% set f_agent = frow.get("agent", "") %}
+            {% set f_avg = _fmt_ms(frow.get("avg_ms")) %}
+            {% set f_p90 = _fmt_ms(frow.get("p90_ms")) %}
+            {% set f_obs = frow.get("observation", frow.get("action", "")) or "" %}
+            <tr>
+              <td><b><code>{{ frow.get('tool_name', '') }}</code></b> <span class="meta">({{ f_agent }})</span></td>
+              <td>{{ f_avg }} / {{ f_p90 }}</td>
+              <td><span class="badge {{ s_cls }}">{{ badge_lbl }}</span></td>
+              <td>
+                {% if frow.get("masked_calls", 0) > 0 and frow.get("unmasked_calls", 0) == 0 %}
+                  <b class="pass">0 ms</b> <span class="meta">(Masked · Saved {{ _fmt_ms(frow.get("net_saved_ms")) }})</span>
+                {% elif frow.get("pl_unmasked_ms") is not none %}
+                  {% set u_cls = _pl_status_cls(frow.get("pl_unmasked_ms")) %}
+                  <b class="{{ u_cls }}">{{ _fmt_ms(frow.get("pl_unmasked_ms")) }} PL</b> <span class="meta">(No filler)</span>
+                {% else %}
+                  <span class="meta">0 ms (Post-speech)</span>
+                {% endif %}
+              </td>
+              <td><span class="meta">{{ f_obs }}</span></td>
+            </tr>
+          {% endfor %}
+        </table>
+      {% endif %}
+
+    </div>
+  </div>
+</details>
+{% endif %}
+{% endmacro %}
+
+<header class="top">
+  <div class="top-in">
+    <div class="top-row">
+      <div class="brand">
+        <span class="brand-title">Combined Eval Report</span>
+        <span class="meta">Generated {{ ts }}</span>
+      </div>
+      <div class="top-actions">
+        <div class="search">
+          <input type="search" id="q" placeholder="Filter evals... (press /)" autocomplete="off">
+          <kbd>/</kbd>
+        </div>
+        <button class="icon-btn" id="theme" type="button" title="Toggle theme (light / dark)" onclick="toggleTheme()">◐</button>
+      </div>
+    </div>
+    <div class="controls" style="margin-top:8px;">
+      <button id="btn-failures" onclick="toggleFailures()">Show Failures Only</button>
+      <button onclick="expandAll()">Expand All</button>
+      <button onclick="collapseAll()">Collapse All</button>
+      {% if suite_latency_html or (suite_pl and suite_pl.get("primary")) %}
+        <button id="btn-latency" onclick="toggleAllLatency()">⏱ Expand All Latency</button>
+      {% endif %}
+    </div>
+    <nav class="nav" id="report-nav">
+      <button type="button" class="active" data-tab="overview" onclick="switchTab('overview')">Overview</button>
+      {% if suite_latency_html or (suite_pl and suite_pl.get("primary")) %}
+        <button type="button" data-tab="latency" onclick="switchTab('latency')">Latency</button>
+      {% endif %}
+      {% if golden_results %}
+        <button type="button" data-tab="goldens" onclick="switchTab('goldens')">Goldens ({{ golden_results | length }})</button>
+      {% endif %}
+      {% if sim_results %}
+        <button type="button" data-tab="sims" onclick="switchTab('sims')">Simulations ({{ sim_results | length }})</button>
+      {% endif %}
+      {% if tool_results or callback_results %}
+        <button type="button" data-tab="unit" onclick="switchTab('unit')">Tools &amp; Callbacks</button>
+      {% endif %}
+    </nav>
+  </div>
+</header>
+
+<div class="tab-pane active" id="tab-overview">
 <div class="summary">
   <div class="summary-top">
     <div class="big {{ 'pass' if pct >= 90 else 'fail' }}">{{ "%.0f" | format(pct) }}%</div>
@@ -11,7 +459,7 @@
   <div class="summary-grid">
     {% if golden_results %}
       {% set g_cls = "pass" if g_passed == g_total else "fail" %}
-      <div class="summary-card" onclick="document.getElementById('section-goldens').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="summary-card" onclick="switchTab('goldens')" style="cursor:pointer">
         <div class="label">Goldens ({{ golden_modality }})</div>
         <div class="value {{ g_cls }}">{{ g_passed }}/{{ g_total }}</div>
         {% if g_duration > 0 %}
@@ -23,7 +471,7 @@
     {% if sim_results %}
       {% set s_cls = "pass" if s_passed == s_total else "fail" %}
       {% set s_time = "" %}
-      <div class="summary-card" onclick="document.getElementById('section-sims').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="summary-card" onclick="switchTab('sims')" style="cursor:pointer">
         <div class="label">Sims ({{ sim_modality }})</div>
         <div class="value {{ s_cls }}">{{ s_passed }}/{{ s_total }}</div>
         {% if sim_wall_clock_s %}
@@ -43,7 +491,7 @@
 
     {% if tool_results %}
       {% set t_cls = "pass" if t_passed == t_total else "fail" %}
-      <div class="summary-card" onclick="document.getElementById('section-tools').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="summary-card" onclick="switchTab('unit')" style="cursor:pointer">
         <div class="label">Tool Tests</div>
         <div class="value {{ t_cls }}">{{ t_passed }}/{{ t_total }}</div>
       </div>
@@ -51,26 +499,13 @@
 
     {% if callback_results %}
       {% set c_cls = "pass" if c_passed == c_total else "fail" %}
-      <div class="summary-card" onclick="document.getElementById('section-callbacks').scrollIntoView({behavior:'smooth'})" style="cursor:pointer">
+      <div class="summary-card" onclick="switchTab('unit')" style="cursor:pointer">
         <div class="label">Callback Tests</div>
         <div class="value {{ c_cls }}">{{ c_passed }}/{{ c_total }}</div>
       </div>
     {% endif %}
   </div>
 </div>
-
-<div class="controls">
-  <button id="btn-failures" onclick="toggleFailures()">Show Failures Only</button>
-  <button onclick="expandAll()">Expand All</button>
-  <button onclick="collapseAll()">Collapse All</button>
-  {% if suite_latency_html %}
-    <button id="btn-latency" onclick="toggleAllLatency()">⏱ Expand All Latency</button>
-  {% endif %}
-</div>
-
-{% if suite_latency_html %}
-  {{ suite_latency_html | safe }}
-{% endif %}
 
 <h2>All Evals</h2>
 <table>
@@ -117,8 +552,20 @@
 {% if failure_patterns_html %}
   {{ failure_patterns_html | safe }}
 {% endif %}
+</div>
+
+{% if suite_latency_html %}
+  <div class="tab-pane" id="tab-latency">
+    {{ suite_latency_html | safe }}
+  </div>
+{% elif suite_pl and suite_pl.get("primary") %}
+  <div class="tab-pane" id="tab-latency">
+    {{ render_suite_latency(suite_pl, trend_chart, _fmt_ms, _pl_status_cls) }}
+  </div>
+{% endif %}
 
 {% if golden_results %}
+  <div class="tab-pane" id="tab-goldens">
   {% set g_pct_str = "%.0f%%" | format(100 * g_passed / g_total) if g_total else "0%" %}
   <h2 id="section-goldens">Goldens <span class="meta">({{ g_passed }}/{{ g_total }} — {{ g_pct_str }})</span></h2>
   {% for r in golden_results | sort(attribute='name') | sort(attribute='passed') %}
@@ -255,9 +702,11 @@
       </div>
     </div>
   {% endfor %}
+  </div>
 {% endif %}
 
 {% if sim_results %}
+  <div class="tab-pane" id="tab-sims">
   {% set s_pct_str = "%.0f%%" | format(100 * s_passed / s_total) if s_total else "0%" %}
   <h2 id="section-sims">Simulations <span class="meta">({{ s_passed }}/{{ s_total }} — {{ s_pct_str }})</span></h2>
 
@@ -466,12 +915,17 @@
       </div>
     </div>
   {% endfor %}
+  </div>
 {% endif %}
 
-{% if tool_results_html %}
-  {{ tool_results_html | safe }}
-{% endif %}
+{% if tool_results or callback_results %}
+  <div class="tab-pane" id="tab-unit">
+    {% if tool_results_html %}
+      {{ tool_results_html | safe }}
+    {% endif %}
 
-{% if callback_results_html %}
-  {{ callback_results_html | safe }}
+    {% if callback_results_html %}
+      {{ callback_results_html | safe }}
+    {% endif %}
+  </div>
 {% endif %}

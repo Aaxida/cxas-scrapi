@@ -1877,3 +1877,176 @@ def test_perceived_latency_standalone_tts_and_barge_in_fallback() -> None:
     bd_barged = res_barged["breakdown_ms"]
     assert round(bd_barged["llm_ttfc_ms"]) == 900
     assert round(bd_barged["tts_ms"]) == 500
+
+
+def test_perceived_latency_redesigned_dashboard_and_tabs(
+    tmp_path: typing.Any,
+) -> None:
+    sample_trace = {
+        "name": "Turn",
+        "startTime": "2026-10-26T01:00:00.000Z",
+        "endTime": "2026-10-26T01:00:03.500Z",
+        "duration": "3.5s",
+        "attributes": {
+            "perceived latency (ms)": 1850.0,
+            "input types": ["audio"],
+        },
+        "childSpans": [
+            {
+                "name": "VAD",
+                "startTime": "2026-10-26T01:00:00.000Z",
+                "endTime": "2026-10-26T01:00:00.500Z",
+                "duration": "0.5s",
+            },
+            {
+                "name": "Callback",
+                "startTime": "2026-10-26T01:00:00.500Z",
+                "endTime": "2026-10-26T01:00:00.800Z",
+                "duration": "0.3s",
+                "attributes": {
+                    "agent": "Troubleshooting_Agent",
+                    "stage": "BeforeModel",
+                    "description": "before_model_callbacks_01",
+                    "[debug] detailed latency": {
+                        "total code execution latency (ms)": 60,
+                        "sandbox init latency (ms)": 5,
+                    },
+                },
+            },
+            {
+                "name": "TOOL: verify_equipment_status",
+                "startTime": "2026-10-26T01:00:00.800Z",
+                "endTime": "2026-10-26T01:00:01.300Z",
+                "duration": "0.5s",
+                "attributes": {
+                    "tool": "verify_equipment_status",
+                },
+            },
+            {
+                "name": "LLM",
+                "startTime": "2026-10-26T01:00:01.300Z",
+                "endTime": "2026-10-26T01:00:02.500Z",
+                "duration": "1.2s",
+                "attributes": {
+                    "agent": "Troubleshooting_Agent",
+                    "model": "gemini-2.5-flash",
+                    "time to first chunk (ms)": 650.0,
+                },
+            },
+            {
+                "name": "TTS",
+                "startTime": "2026-10-26T01:00:02.500Z",
+                "endTime": "2026-10-26T01:00:03.500Z",
+                "duration": "1.0s",
+                "attributes": {
+                    "time to first audio (ms)": 350.0,
+                },
+            },
+        ],
+    }
+
+    golden_results = [
+        {
+            "name": "golden_equipment_check",
+            "type": "golden",
+            "modality": "audio",
+            "passed": True,
+            "duration_s": 3.5,
+            "turns": [
+                {
+                    "user_text": "Is the router online?",
+                    "agent_text": "Let me check.",
+                    "root_span": sample_trace,
+                }
+            ],
+            "turn_traces": [
+                {"root_span": sample_trace},
+            ],
+        }
+    ]
+
+    sim_results = [
+        {
+            "name": "sim_troubleshoot_flow",
+            "type": "sim",
+            "modality": "audio",
+            "passed": True,
+            "turns": 2,
+            "run": 0,
+            "turn_traces": [
+                {"root_span": sample_trace},
+                {"root_span": sample_trace},
+            ],
+        }
+    ]
+
+    report_path = os.path.join(tmp_path, "canary_combined_report.html")
+    generate_combined_html_report(
+        golden_results=golden_results,
+        sim_results=sim_results,
+        tool_results=[],
+        callback_results=[],
+        output_path=report_path,
+        golden_modality="audio",
+        sim_modality="audio",
+    )
+
+    with open(report_path) as f:
+        html = f.read()
+
+    assert '<header class="top">' in html
+    assert '<nav class="nav" id="report-nav">' in html
+    assert 'data-tab="overview"' in html
+    assert 'data-tab="latency"' in html
+    assert 'data-tab="goldens"' in html
+    assert 'data-tab="sims"' in html
+    assert '<input type="search" id="q"' in html
+    assert "<kbd>/</kbd>" in html
+    assert 'id="theme"' in html
+
+    assert 'id="tab-overview"' in html
+    assert 'id="tab-latency"' in html
+    assert 'id="tab-goldens"' in html
+    assert 'id="tab-sims"' in html
+
+    assert 'id="lat-n"' in html
+    assert '<div class="tiles">' in html
+    assert "Perceived p50" in html
+    assert "Perceived p90" in html
+    assert "Perceived p95" in html
+    assert "LLM first chunk p50" in html
+    assert "LLM calls / turn" in html
+    assert "Reasoning loops / turn" in html
+
+    assert 'id="lat-trend"' in html
+    assert "Perceived latency by turn" in html
+    assert "<svg" in html
+    assert 'class="hit"' in html
+    assert "Turn volume" in html
+
+    assert 'id="lat-tbl"' in html
+    assert "Perceived latency, all turns" in html
+    assert "Perceived latency, after the first turn" in html
+    assert "LLM time to first chunk" in html
+    assert "LLM call latency, per call" in html
+    assert "LLM total latency, per turn with an LLM call" in html
+    assert "BeforeModel callback time, per turn" in html
+    assert "Tool time, per turn with a tool call" in html
+    assert "First TTS audio" in html
+    assert "Reasoning loops per turn (BeforeModel steps)" in html
+    assert "LLM calls per turn" in html
+
+    assert "Where a turn's time goes" in html
+    assert 'id="lat-parts"' in html
+    assert "Tool latency" in html
+    assert 'id="lat-tools"' in html
+    assert "verify_equipment_status" in html
+
+    assert "Slowest evaluations" in html
+    assert 'id="lat-slow"' in html
+    assert "jumpTo(" in html
+
+    assert 'class="pl-suite-details latency-drawer"' in html
+    assert '<span class="pl-arrow">&#9654;</span>' in html
+    assert "Table A: Pre-Speech Component Breakdown" in html
+    assert "Callback Time Decomposition" in html
