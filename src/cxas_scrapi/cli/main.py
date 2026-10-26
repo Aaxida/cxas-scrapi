@@ -2237,6 +2237,14 @@ def get_parser() -> argparse.ArgumentParser:
         "--target-dir", default=".", help="Directory to extract to."
     )
     parser_pull.add_argument(
+        "--app-dir-name",
+        default=None,
+        help=(
+            "Override the top-level folder name of the exported app inside "
+            "--target-dir."
+        ),
+    )
+    parser_pull.add_argument(
         "--version-id",
         default=None,
         help=(
