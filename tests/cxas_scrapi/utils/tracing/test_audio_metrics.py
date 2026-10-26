@@ -104,3 +104,85 @@ def test_missing_turn_numbers_sort_last_and_count(tmp_path: Path) -> None:
     call, turns = am.measure_call([b, a])
     assert [t["turn"] for t in turns] == [2, 10]
     assert call["n_turns"] == 2
+
+
+def _write_two_voice_wav(
+    path: Path,
+    f0_a: float,
+    f0_b: float,
+    gap_s: float = 0.3,
+    part_s: float = 1.8,
+) -> str:
+    """Two voiced parts at different pitches with a pause between them, the
+    shape of a turn spliced from two renders."""
+
+    def part(f0: float) -> np.ndarray:
+        t = np.arange(int(part_s * SR)) / SR
+        y = (
+            np.sin(2 * math.pi * f0 * t)
+            + 0.5 * np.sin(2 * math.pi * 2 * f0 * t)
+            + 0.25 * np.sin(2 * math.pi * 3 * f0 * t)
+        )
+        envelope = 0.55 + 0.45 * np.sign(np.sin(2 * math.pi * 4.0 * t))
+        return 0.2 * y / np.max(np.abs(y)) * envelope
+
+    y = np.concatenate([part(f0_a), np.zeros(int(gap_s * SR)), part(f0_b)])
+    pcm = (y * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as fh:
+        fh.setnchannels(1)
+        fh.setsampwidth(2)
+        fh.setframerate(SR)
+        fh.writeframes(pcm.tobytes())
+    return str(path)
+
+
+def test_seam_reports_an_apparent_speaker_change(tmp_path: Path) -> None:
+    # +12.7 st: the calibrated male->female greeting splice.
+    p = _write_two_voice_wav(tmp_path / "agent-turn-1.wav", 120.0, 250.0)
+    feat = am.turn_metrics(p)
+    assert len(feat["seams"]) == 1
+    seam = feat["seams"][0]
+    assert seam["tier"] == "speaker_change"
+    assert seam["shift_st"] == pytest.approx(12.7, abs=0.6)
+    assert seam["t_s"] == pytest.approx(1.8, abs=0.1)
+    assert feat["max_seam_st"] == pytest.approx(12.7, abs=0.6)
+
+
+def test_seam_reports_drift_between_seven_and_eleven_semitones(
+    tmp_path: Path,
+) -> None:
+    p = _write_two_voice_wav(
+        tmp_path / "agent-turn-1.wav", 120.0, 185.0
+    )  # +7.5 st
+    seams = am.turn_metrics(p)["seams"]
+    assert [s["tier"] for s in seams] == ["drift"]
+
+
+def test_ordinary_intonation_is_not_a_seam(tmp_path: Path) -> None:
+    p = _write_two_voice_wav(
+        tmp_path / "agent-turn-1.wav", 120.0, 130.0
+    )  # +1.4 st
+    feat = am.turn_metrics(p)
+    assert feat["seams"] == []
+    assert feat["max_seam_st"] == 0.0
+
+
+def test_a_long_pause_is_not_a_splice(tmp_path: Path) -> None:
+    p = _write_two_voice_wav(
+        tmp_path / "agent-turn-1.wav", 120.0, 250.0, gap_s=2.0
+    )
+    assert am.turn_metrics(p)["seams"] == []
+
+
+def test_call_flags_name_the_turns_with_seams(tmp_path: Path) -> None:
+    paths = [
+        _write_voice_wav(tmp_path / "agent-turn-1.wav", seconds=3.0, f0=120.0),
+        _write_two_voice_wav(tmp_path / "agent-turn-2.wav", 120.0, 250.0),
+        _write_two_voice_wav(tmp_path / "agent-turn-3.wav", 120.0, 185.0),
+    ]
+    call, _ = am.measure_call(paths)
+    assert call["seam_speaker_change_turns"] == [2]
+    assert call["seam_drift_turns"] == [3]
+    assert "intra_turn_speaker_change" in call["flags"]
+    assert "intra_turn_voice_drift" in call["flags"]
+    assert call["max_seam_st"] == pytest.approx(12.7, abs=0.6)

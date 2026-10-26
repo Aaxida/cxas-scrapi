@@ -112,3 +112,30 @@ def test_syllable_counter_on_known_phrases() -> None:
     assert ad.syllables_in_text("one moment please") == 4
     assert ad.syllables_in_text("") == 0
     assert ad.syllables_in_text("7 3 1") == 3  # bare digits count as spoken
+
+
+def test_midturn_and_middrift_come_from_the_turns_seams() -> None:
+    change = {
+        "t_s": 2.35,
+        "shift_st": 12.7,
+        "tier": "speaker_change",
+        "level_db": 0.4,
+    }
+    drift = {"t_s": 4.1, "shift_st": -7.5, "tier": "drift", "level_db": -0.2}
+    rows = [
+        _row(1, 3.0, -20.0),
+        dict(_row(2, 3.0, -20.0), seams=[change, drift]),
+        dict(_row(3, 3.0, -20.0), seams=[drift]),
+    ]
+    flagged = ad.flag_drift(rows)
+    assert [r["turn"] for r in flagged] == [2, 3]
+    assert rows[1]["flags"] == ["MIDTURN"]
+    assert rows[2]["flags"] == ["MIDDRIFT"]
+    assert (
+        "apparent speaker change inside the turn at 2.35s (+12.7 st)"
+        in ad.describe(rows[1])
+    )
+    assert (
+        "voice drift, listen to confirm inside the turn at 4.10s (-7.5 st)"
+        in ad.describe(rows[2])
+    )

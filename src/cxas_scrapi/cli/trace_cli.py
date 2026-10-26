@@ -907,7 +907,7 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "measure",
         help=(
             "Numeric voice-consistency metrics over the agent turns "
-            "(loudness, rate, pitch; no model)."
+            "(loudness, rate, pitch, within-turn voice seams; no model)."
         ),
     )
     add_trace_args(p_audio_measure)
@@ -922,7 +922,8 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         "drift",
         help=(
             "Per-turn voice-drift flags: TTS vintage seams (cached vs "
-            "fresh), loudness steps, truncation."
+            "fresh), loudness steps, truncation, voice changes inside a "
+            "turn."
         ),
     )
     add_trace_args(p_audio_drift)

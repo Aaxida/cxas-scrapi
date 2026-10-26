@@ -28,7 +28,11 @@ and cannot be talked into anything. Per agent turn it measures
 * median fundamental frequency, in Hz and converted to semitones for
   cross-turn spread,
 * a coarse timbre vector (mean MFCC 1..12 over phonated frames), used
-  only for cosine-drift scores across turns.
+  only for cosine-drift scores across turns,
+* within-turn voice seams: the median-pitch shift across each pause, from
+  a two-pass speaker-adaptive pitch track (see `intra_turn_seams`). A jump
+  of 11 semitones or more reads as a different speaker; 7 to 11 is audible
+  drift worth a listen.
 
 Per call it aggregates turn-to-turn consistency: the loudness standard
 deviation and the largest adjacent-turn jump, the articulation-rate
@@ -86,6 +90,28 @@ DEFAULT_THRESHOLDS: dict[str, float] = {
     "max_lra_within_turn": 6.0,
     "f0_median_sd_st": 2.0,
 }
+
+#: Within-turn voice seams, calibrated 2026-10-13 against human labels on
+#: 4 reviewed calls (26 agent turns; a small sample, re-check as labels
+#: accumulate). The shift is the median F0 over `SEAM_WINDOW_S` of speech
+#: on each side of a pause, from a two-pass pitch track:
+#:   >= SEAM_SPEAKER_CHANGE_ST  apparent speaker change (caught all 4
+#:                              labelled male->female greeting splices at
+#:                              +12.7 st; 0 of 18 unlabelled turns),
+#:   >= SEAM_DRIFT_ST           audible voice drift (adds the labelled
+#:                              "voice changes between sentences" turns at
+#:                              +7.5 st); listen to confirm.
+#: Below 7 st is ordinary intonation (5 st flagged 11 of 18 clean turns).
+SEAM_SPEAKER_CHANGE_ST = 11.0
+SEAM_DRIFT_ST = 7.0
+#: Speech compared on each side of a candidate seam.
+SEAM_WINDOW_S = 1.5
+#: Voiced 10 ms frames needed per side for a usable median.
+SEAM_MIN_VOICED_FRAMES = 10
+#: Energy segments shorter than this have no stable pitch median.
+SEAM_MIN_SEGMENT_S = 0.35
+#: A gap longer than this is a pause between thoughts, not a splice.
+SEAM_MAX_GAP_S = 1.5
 
 _TURN_NUM_RE = re.compile(r"agent-turn-(\d+)")
 
@@ -172,6 +198,135 @@ def _syllable_nuclei(intensity: Any, pitch: Any) -> tuple[int, float, float]:
     return n, phonation, voiced
 
 
+def _speech_segments(y: np.ndarray, sr: int) -> list[tuple[float, float]]:
+    """Energy-gated speech segments [(start_s, end_s)], short gaps merged."""
+    hop, win = int(0.010 * sr), int(0.030 * sr)
+    if len(y) < win:
+        return []
+    n = max(1, (len(y) - win) // hop)
+    frames = np.lib.stride_tricks.sliding_window_view(y, win)[::hop][:n]
+    rms = np.sqrt((frames.astype(np.float64) ** 2).mean(axis=1) + 1e-12)
+    on = rms > max(float(rms.max()) * 0.06, 1e-5)
+    raw: list[tuple[float, float]] = []
+    start = None
+    for i, voiced in enumerate(on):
+        t = i * hop / sr
+        if voiced and start is None:
+            start = t
+        elif not voiced and start is not None:
+            if t - start >= SEAM_MIN_SEGMENT_S:
+                raw.append((start, t))
+            start = None
+    end = n * hop / sr
+    if start is not None and end - start >= SEAM_MIN_SEGMENT_S:
+        raw.append((start, end))
+    merged: list[tuple[float, float]] = []
+    for s, e in raw:
+        if merged and s - merged[-1][1] < 0.15:
+            merged[-1] = (merged[-1][0], e)
+        else:
+            merged.append((s, e))
+    return merged
+
+
+def _two_pass_pitch(snd: Any) -> tuple[np.ndarray, np.ndarray] | None:
+    """Speaker-adaptive F0 contour (De Looze & Hirst two-pass).
+
+    A wide first pass estimates the speaker's range; the second re-tracks
+    inside [0.75 * q15, 1.5 * q85]. Single-pass medians over short
+    fragments produce octave errors that read as speaker changes (24 of 25
+    single-pass hits in the 2026-10-13 review were artifacts; the one
+    human-confirmed switch survives this method at +12.7 st).
+    """
+    wide = snd.to_pitch(time_step=0.01, pitch_floor=60, pitch_ceiling=600)
+    v = wide.selected_array["frequency"]
+    v = v[v > 0]
+    if len(v) < 3 * SEAM_MIN_VOICED_FRAMES:
+        return None
+    q15, q85 = np.percentile(v, 15), np.percentile(v, 85)
+    tight = snd.to_pitch(
+        time_step=0.01,
+        pitch_floor=max(50.0, 0.75 * q15),
+        pitch_ceiling=min(700.0, 1.5 * q85),
+    )
+    return np.asarray(tight.xs()), tight.selected_array["frequency"]
+
+
+def _seam_shift_st(xs: np.ndarray, f0: np.ndarray, t: float) -> float | None:
+    """Semitone shift of median F0 across time `t`, or None if too sparse."""
+    before = f0[(xs >= t - SEAM_WINDOW_S) & (xs < t) & (f0 > 0)]
+    after = f0[(xs >= t) & (xs < t + SEAM_WINDOW_S) & (f0 > 0)]
+    if (
+        len(before) < SEAM_MIN_VOICED_FRAMES
+        or len(after) < SEAM_MIN_VOICED_FRAMES
+    ):
+        return None
+    return 12.0 * math.log2(float(np.median(after)) / float(np.median(before)))
+
+
+def _rms_db(y: np.ndarray, sr: int, a: float, b: float) -> float:
+    seg = y[int(a * sr) : int(b * sr)]
+    return 20 * math.log10(
+        float(np.sqrt(np.mean(seg.astype(np.float64) ** 2))) + 1e-9
+    )
+
+
+def intra_turn_seams(
+    y: np.ndarray, sr: int, snd: Any, mfcc: Any = None
+) -> list[dict]:
+    """Voice seams inside one agent turn.
+
+    Every pause shorter than `SEAM_MAX_GAP_S` between two speech segments is
+    a candidate. Its pitch shift is compared on the two-pass contour over
+    `SEAM_WINDOW_S` of speech on each side, and shifts of at least
+    `SEAM_DRIFT_ST` are reported with a `tier`: `speaker_change`
+    (>= `SEAM_SPEAKER_CHANGE_ST`) or `drift`. Flags closer together than one
+    window are merged into the first.
+
+    Each seam also carries the level step between the two segments and,
+    when `mfcc` is given, the cosine distance between the mean MFCC 1..12
+    on each side. A true speaker change moves timbre as well as pitch,
+    while a tracker octave error does not; both numbers are reported for
+    review and are not part of the calibrated tiers.
+    """
+    segs = _speech_segments(y, sr)
+    contour = _two_pass_pitch(snd)
+    if contour is None or len(segs) < 2:
+        return []
+    xs, f0 = contour
+    m_xs = m_arr = None
+    if mfcc is not None:
+        m_xs, m_arr = np.asarray(mfcc.xs()), mfcc.to_array()[1:]
+    seams: list[dict] = []
+    last = -math.inf
+    for (a1, b1), (a2, b2) in pairwise(segs):
+        if a2 - b1 > SEAM_MAX_GAP_S or b1 - last <= SEAM_WINDOW_S:
+            continue
+        st = _seam_shift_st(xs, f0, b1)
+        if st is None or abs(st) < SEAM_DRIFT_ST:
+            continue
+        seam = {
+            "t_s": round(b1, 2),
+            "shift_st": round(st, 1),
+            "tier": "speaker_change"
+            if abs(st) >= SEAM_SPEAKER_CHANGE_ST
+            else "drift",
+            "level_db": round(
+                _rms_db(y, sr, a2, b2) - _rms_db(y, sr, a1, b1), 1
+            ),
+        }
+        if m_arr is not None:
+            left = m_arr[:, (m_xs >= b1 - SEAM_WINDOW_S) & (m_xs < b1)]
+            right = m_arr[:, (m_xs >= a2) & (m_xs < a2 + SEAM_WINDOW_S)]
+            if left.shape[1] > 10 and right.shape[1] > 10:
+                seam["timbre_dist"] = round(
+                    _cosine_dist(left.mean(axis=1), right.mean(axis=1)), 4
+                )
+        seams.append(seam)
+        last = b1
+    return seams
+
+
 def turn_metrics(path: str, meter_cache: dict | None = None) -> dict:
     """Per-turn features for one agent recording. See the module docstring."""
     if parselmouth is None or pyloudnorm is None:
@@ -246,6 +401,12 @@ def turn_metrics(path: str, meter_cache: dict | None = None) -> dict:
         feat["_mfcc"] = m[1:, mask].mean(axis=1).tolist()
     else:
         feat["_mfcc"] = [float("nan")] * 12
+
+    # --- within-turn voice seams
+    feat["seams"] = intra_turn_seams(y, sr, snd, mfcc)
+    feat["max_seam_st"] = max(
+        (abs(x["shift_st"]) for x in feat["seams"]), default=0.0
+    )
     return feat
 
 
@@ -351,11 +512,30 @@ def measure_call(
         if vs_prev:
             call["timbre_drift_vs_prev_max"] = round(max(vs_prev), 4)
 
+    measured = [t for t in turns if "skipped" not in t]
+    call["max_seam_st"] = max(
+        (t.get("max_seam_st", 0.0) for t in measured), default=0.0
+    )
+    call["seam_speaker_change_turns"] = [
+        t["turn"]
+        for t in measured
+        if any(x["tier"] == "speaker_change" for x in t.get("seams", ()))
+    ]
+    call["seam_drift_turns"] = [
+        t["turn"]
+        for t in measured
+        if t.get("seams") and all(x["tier"] == "drift" for x in t["seams"])
+    ]
+
     call["flags"] = sorted(
         k
         for k, limit in thresholds.items()
         if np.isfinite(call.get(k, float("nan"))) and call[k] > limit
     )
+    if call["seam_speaker_change_turns"]:
+        call["flags"].append("intra_turn_speaker_change")
+    if call["seam_drift_turns"]:
+        call["flags"].append("intra_turn_voice_drift")
     for t in turns:
         t.pop("_mfcc", None)
     return call, turns

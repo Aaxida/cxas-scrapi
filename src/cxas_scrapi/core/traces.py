@@ -1234,7 +1234,8 @@ class Traces(Common):
         The signal-measurement counterpart to :meth:`analyze_audio`: no
         model involved. Downloads every `agent-turn-N.wav` of the
         conversation and reports per-turn loudness (LUFS), articulation
-        rate, median pitch and within-turn loudness range, plus per-call
+        rate, median pitch, within-turn loudness range and within-turn
+        voice seams (pitch shifts across a pause), plus per-call
         consistency scores with threshold flags (see
         `utils.tracing.audio_metrics.DEFAULT_THRESHOLDS`).
 
@@ -1275,10 +1276,12 @@ class Traces(Common):
     ) -> dict[str, Any]:
         """Per-turn voice-drift flags for one conversation.
 
-        Combines three signal families (see `utils.tracing.audio_drift`):
+        Combines four signal families (see `utils.tracing.audio_drift`):
         the platform's own TTS spans (cached vs fresh clips -> vintage
         SEAMs), the numeric loudness track (adjacent-turn steps -> LOUD),
-        and the transcript's syllable budget vs the audio (TRUNC).
+        the transcript's syllable budget vs the audio (TRUNC), and pitch
+        seams inside a turn (MIDTURN for an apparent speaker change,
+        MIDDRIFT for audible drift).
 
         Needs the optional dependencies:
         `pip install "cxas-scrapi[audio-metrics]"`, plus
@@ -1333,6 +1336,7 @@ class Traces(Common):
                     "f0_median_hz": t.get("f0_median_hz"),
                     "artic_rate": t.get("artic_rate"),
                     "n_syl": t.get("n_syl"),
+                    "seams": t.get("seams", []),
                     "agent_text": " | ".join(agent_text.get(conv_turn, [])),
                     "user_text": " | ".join(user_text.get(conv_turn, [])),
                 }

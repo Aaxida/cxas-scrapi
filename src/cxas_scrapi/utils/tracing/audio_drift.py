@@ -20,7 +20,7 @@ different sampling run, a different conversational context, and possibly
 an older model build than today's fresh clips. Splicing vintages into one
 call is what listeners report as "the agent's voice changed".
 
-This module turns that into per-turn flags, from three independent
+This module turns that into per-turn flags, from four independent
 signal families:
 
   SEAM   provenance — this turn's TTS source (cached vs fresh, read from
@@ -35,6 +35,13 @@ signal families:
   TRUNC  content — the audio carries well under the syllables the turn's
          text calls for (ratio < 0.6 with at least 8 expected syllables):
          a playback or barge-in cutoff.
+  MIDTURN / MIDDRIFT
+         a voice seam inside the turn: the median pitch shifts across a
+         pause by 11 semitones or more (MIDTURN, an apparent speaker
+         change) or by 7 to 11 (MIDDRIFT, listen to confirm). Typical
+         causes are two renders spliced into one turn, or a line spoken
+         by a different synthesis path than the rest of the turn. Read
+         from `seams` in the `audio_metrics` turn rows.
 
 The flag logic here is dependency-light on purpose; the acoustic numbers
 per turn come from `audio_metrics` (optional `audio-metrics` extra), and
@@ -179,11 +186,11 @@ def join_spans(
 def flag_drift(
     rows: list[dict[str, Any]], loud_db: float = DEFAULT_LOUD_DB
 ) -> list[dict[str, Any]]:
-    """Adds `flags` (SEAM / LOUD / TRUNC) per row; returns the flagged rows.
+    """Adds `flags` (SEAM / LOUD / TRUNC / MIDTURN / MIDDRIFT) per row.
 
     Expects rows ordered by turn, each carrying what `audio_metrics` and
-    `join_spans` produce: `dur_s`, `lufs`, `n_syl`, `tts`, and the turn's
-    `agent_text`.
+    `join_spans` produce: `dur_s`, `lufs`, `n_syl`, `seams`, `tts`, and the
+    turn's `agent_text`. Returns the flagged rows.
     """
     prev_src: str | None = None
     prev_lufs: float | None = None
@@ -205,6 +212,11 @@ def flag_drift(
         heard = row.get("n_syl") or 0
         if expected >= TRUNC_MIN_SYLLABLES and heard / expected < TRUNC_RATIO:
             flags.append("TRUNC")
+        tiers = {s.get("tier") for s in row.get("seams") or ()}
+        if "speaker_change" in tiers:
+            flags.append("MIDTURN")
+        elif "drift" in tiers:
+            flags.append("MIDDRIFT")
         row["flags"] = flags
         if flags:
             flagged.append(row)
@@ -222,4 +234,15 @@ def describe(row: dict[str, Any]) -> str:
         )
     if "TRUNC" in row.get("flags", ()):
         parts.append("audio truncated vs the turn's text")
+    for flag, tier, label in (
+        ("MIDTURN", "speaker_change", "apparent speaker change"),
+        ("MIDDRIFT", "drift", "voice drift, listen to confirm"),
+    ):
+        if flag in row.get("flags", ()):
+            at = ", ".join(
+                f"{s['t_s']:.2f}s ({s['shift_st']:+.1f} st)"
+                for s in row.get("seams") or ()
+                if s.get("tier") == tier
+            )
+            parts.append(f"{label} inside the turn at {at}")
     return " + ".join(parts)
