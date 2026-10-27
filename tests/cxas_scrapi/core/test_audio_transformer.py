@@ -54,6 +54,11 @@ class TestAudioTransformer:
         assert result["text"] == "hello"
         assert result["audio_bytes"] == b"audio_data"
         mock_client.synthesize_speech.assert_called_once()
+        mock_tts.VoiceSelectionParams.assert_called_once_with(
+            language_code="en-US",
+            name="Aoede",
+            model_name="gemini-3.8-flash-lite-tts",
+        )
 
     @patch("cxas_scrapi.core.audio_transformer.texttospeech")
     def test_text_to_speech_bytes_api_error(self, mock_tts: typing.Any) -> None:
@@ -121,6 +126,7 @@ class TestAudioTransformer:
         custom_voice = {
             "language_code": "fr-FR",
             "voice_name": "fr-FR-Standard-G",
+            "model_name": "custom-tts-model",
         }
         result = self.transformer.text_to_speech_bytes(
             text="Bonjour",
@@ -136,11 +142,13 @@ class TestAudioTransformer:
 
         # Verify custom params were used
         mock_tts.VoiceSelectionParams.assert_called_once_with(
-            language_code="fr-FR", name="fr-FR-Standard-G"
+            language_code="fr-FR",
+            name="fr-FR-Standard-G",
+            model_name="custom-tts-model",
         )
 
     @patch("cxas_scrapi.core.audio_transformer.texttospeech")
-    def test_text_to_speech_bytes_defaults_voice_name_from_language_code(
+    def test_text_to_speech_bytes_custom_language_code_default_voice_and_model(
         self, mock_tts: typing.Any
     ) -> None:
         mock_client = MagicMock()
@@ -168,7 +176,41 @@ class TestAudioTransformer:
         assert result["text"] == "Hola"
         assert result["audio_bytes"] == b"audio_data"
         mock_tts.VoiceSelectionParams.assert_called_once_with(
-            language_code="es-US", name="es-US-Standard-A"
+            language_code="es-US",
+            name="Aoede",
+            model_name="gemini-3.8-flash-lite-tts",
+        )
+
+    @patch("cxas_scrapi.core.audio_transformer.texttospeech")
+    def test_text_to_speech_bytes_model_name_none(
+        self, mock_tts: typing.Any
+    ) -> None:
+        mock_client = MagicMock()
+        mock_tts.TextToSpeechClient.return_value = mock_client
+
+        with io.BytesIO() as wav_io:
+            with wave.open(wav_io, "wb") as wav_file:
+                wav_file.setnchannels(1)
+                wav_file.setsampwidth(2)
+                wav_file.setframerate(16000)
+                wav_file.writeframes(b"audio_data")
+            wav_bytes = wav_io.getvalue()
+
+        mock_response = MagicMock()
+        mock_response.audio_content = wav_bytes
+        mock_client.synthesize_speech.return_value = mock_response
+
+        result = self.transformer.text_to_speech_bytes(
+            text="Hello",
+            credentials=MagicMock(),
+            project_id="test-project",
+            voice_config={"model_name": None},
+        )
+
+        assert result["text"] == "Hello"
+        assert result["audio_bytes"] == b"audio_data"
+        mock_tts.VoiceSelectionParams.assert_called_once_with(
+            language_code="en-US", name="Aoede"
         )
 
     @patch("cxas_scrapi.core.audio_transformer.AudioSegment")

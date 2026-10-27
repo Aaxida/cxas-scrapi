@@ -31,7 +31,8 @@ from google.protobuf.json_format import MessageToDict
 from pydantic import BaseModel, Field, TypeAdapter, model_validator
 from rich.progress import track
 
-from cxas_scrapi.core.sessions import Sessions
+from cxas_scrapi.core.response_parser import ParsedSessionResponse
+from cxas_scrapi.core.sessions import BargeInMetadata, Sessions
 from cxas_scrapi.core.variables import Variables
 from cxas_scrapi.utils.dependency_manager import SessionDependencyManager
 from cxas_scrapi.utils.eval_utils import (
@@ -51,6 +52,15 @@ class HistoricalContextConfig(BaseModel):
     session_id: str | None = None
     test_name: str | None = None
     utterances: list[dict[str, Any]] | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def coerce_shorthand(cls, data: Any) -> Any:
+        if isinstance(data, str):
+            return {"session_id": data}
+        if isinstance(data, list):
+            return {"utterances": data}
+        return data
 
     @model_validator(mode="after")
     def check_mutually_exclusive(self) -> typing.Any:
@@ -80,6 +90,10 @@ class TurnOperator(str, enum.Enum):
     NO_TOOLS_CALLED = "no_tools_called"
     AGENT_TRANSFER = "agent_transfer"
     FUZZY_MATCH = "fuzzy_match"
+    AGENT_INTERRUPTED = "agent_interrupted"
+    BARGE_IN_AWARENESS_INJECTED = "barge_in_awareness_injected"
+    VAD_BARGE_IN = "vad_barge_in"
+    VAD_SKIP_REASON = "vad_skip_reason"
 
 
 class TurnExpectation(BaseModel):
@@ -95,6 +109,7 @@ class TurnStep(BaseModel):
     turn: str
     user: str | None = None
     event: str | None = None
+    barge_in_after_ms: int | None = None
     variables: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
     expectations: list[TurnExpectation | str] = Field(default_factory=list)
@@ -122,6 +137,36 @@ class DependencyResolutionError(Exception):
         self.message = message
         self.skip_result = skip_result
         super().__init__(self.message)
+
+
+def _coerce_expected_bool(val: Any) -> bool:
+    """Coerces various truthy/falsy representations to bool."""
+    if val is None:
+        return True
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        return bool(val)
+    if isinstance(val, str):
+        s = val.strip().lower()
+        if s in ("true", "1", "yes", "y", "t"):
+            return True
+        if s in ("false", "0", "no", "n", "f"):
+            return False
+    raise ValueError(f"Cannot coerce value {val!r} to boolean")
+
+
+def _resolve_step_input(step: Any) -> tuple[str | None, str | None, str]:
+    """Extracts user utterance, event name, and formatted text from a step."""
+    user_input = getattr(step, "user", None)
+    event_name = getattr(step, "event", None)
+    if user_input:
+        match = re.match(r"^<event>(.*?)</event>$", user_input)
+        if match:
+            event_name = match.group(1)
+            user_input = None
+    text = user_input if user_input is not None else f"event:{event_name}"
+    return user_input, event_name, text
 
 
 class TurnEvals:
@@ -385,12 +430,56 @@ class TurnEvals:
                     if tool_name not in tool_inputs:
                         tool_inputs[tool_name] = tc.get("args", {})
 
+        parsed = None
+        with contextlib.suppress(Exception):
+            parsed = ParsedSessionResponse(turn_response)
+
+        barge_meta = getattr(turn_response, "barge_in_metadata", None)
+        if not isinstance(barge_meta, BargeInMetadata):
+            barge_meta = (
+                parsed.barge_in_metadata
+                if parsed
+                and isinstance(
+                    getattr(parsed, "barge_in_metadata", None), BargeInMetadata
+                )
+                else None
+            )
+
+        agent_interrupted = (
+            bool(parsed.interrupted)
+            if parsed and isinstance(getattr(parsed, "interrupted", None), bool)
+            else bool(barge_meta.interrupted if barge_meta else False)
+        )
+        barge_in_context = (
+            parsed.barge_in_context
+            if parsed
+            and isinstance(getattr(parsed, "barge_in_context", None), str)
+            else None
+        )
+        vad_barge_in = (
+            bool(parsed.vad_barge_in)
+            if parsed
+            and isinstance(getattr(parsed, "vad_barge_in", None), bool)
+            else False
+        )
+        vad_skip_reason = (
+            str(parsed.vad_skip_reason)
+            if parsed and getattr(parsed, "vad_skip_reason", None) is not None
+            else None
+        )
+        barge_in_metadata = barge_meta
+
         return {
             "full_text": full_text,
             "called_tools": called_tools,
             "tool_inputs": tool_inputs,
             "tool_outputs": tool_outputs,
             "target_agent": target_agent,
+            "agent_interrupted": agent_interrupted,
+            "barge_in_context": barge_in_context,
+            "vad_barge_in": vad_barge_in,
+            "vad_skip_reason": vad_skip_reason,
+            "barge_in_metadata": barge_in_metadata,
         }
 
     def _resolve_historical_context(self, case: TurnTestCase) -> Any | None:
@@ -618,6 +707,65 @@ class TurnEvals:
                             f"contained matching outputs {expected}. "
                             f"Actual tool outputs: {tool_outputs}"
                         )
+            elif op == TurnOperator.AGENT_INTERRUPTED:
+                try:
+                    expected_bool = _coerce_expected_bool(expected)
+                except ValueError as err:
+                    status = "FAILURE"
+                    justification = str(err)
+                    expected_bool = None
+                actual_bool = bool(signals.get("agent_interrupted", False))
+                actual = str(actual_bool)
+                if expected_bool is not None and actual_bool != expected_bool:
+                    status = "FAILURE"
+                    justification = (
+                        f"AGENT_INTERRUPTED failed: Expected {expected_bool}, "
+                        f"Got {actual}"
+                    )
+            elif op == TurnOperator.BARGE_IN_AWARENESS_INJECTED:
+                barge_context = signals.get("barge_in_context") or ""
+                actual = barge_context
+                try:
+                    expected_bool = _coerce_expected_bool(expected)
+                    if bool(barge_context) != expected_bool:
+                        status = "FAILURE"
+                        justification = (
+                            "BARGE_IN_AWARENESS_INJECTED failed: "
+                            f"Expected {expected_bool}, "
+                            f"Got {bool(barge_context)}"
+                        )
+                except ValueError:
+                    if str(expected).lower() not in barge_context.lower():
+                        status = "FAILURE"
+                        justification = (
+                            "BARGE_IN_AWARENESS_INJECTED failed: "
+                            f"Expected '{expected}' in context, "
+                            f"Got '{barge_context}'"
+                        )
+            elif op == TurnOperator.VAD_BARGE_IN:
+                try:
+                    expected_bool = _coerce_expected_bool(expected)
+                except ValueError as err:
+                    status = "FAILURE"
+                    justification = str(err)
+                    expected_bool = None
+                actual_bool = bool(signals.get("vad_barge_in", False))
+                actual = str(actual_bool)
+                if expected_bool is not None and actual_bool != expected_bool:
+                    status = "FAILURE"
+                    justification = (
+                        f"VAD_BARGE_IN failed: Expected {expected_bool}, "
+                        f"Got {actual}"
+                    )
+            elif op == TurnOperator.VAD_SKIP_REASON:
+                actual = str(signals.get("vad_skip_reason") or "")
+                expected_str = "" if expected is None else str(expected)
+                if actual.lower() != expected_str.lower():
+                    status = "FAILURE"
+                    justification = (
+                        f"VAD_SKIP_REASON failed: Expected '{expected_str}', "
+                        f"Got '{actual}'"
+                    )
 
             results.append(
                 {
@@ -719,6 +867,102 @@ class TurnEvals:
 
         return result[::-1]
 
+    def _record_step_result(
+        self,
+        step: TurnStep,
+        turn_response: Any,
+        test_session_id: str,
+        full_conversation_trace: list[str],
+        results: list[dict[str, Any]],
+        case_name: str,
+    ) -> str:
+        signals = self._extract_signals(turn_response)
+        user_input = getattr(step, "user", "") or getattr(step, "event", "")
+        full_conversation_trace.append(f"User: {user_input}")
+        full_conversation_trace.append(
+            f"Agent Text: {signals['full_text'].strip()}"
+        )
+        for tool in signals["called_tools"]:
+            full_conversation_trace.append(
+                f"Tool Call: {tool} with args "
+                f"{signals['tool_inputs'].get(tool, {})}"
+            )
+            full_conversation_trace.append(
+                f"Tool Response: {tool} with result "
+                f"{signals['tool_outputs'].get(tool, {})}"
+            )
+        if signals["target_agent"]:
+            full_conversation_trace.append(
+                f"Agent Transfer: {signals['target_agent']}"
+            )
+        meta = signals.get("barge_in_metadata")
+        if isinstance(meta, BargeInMetadata) and meta.interrupted:
+            full_conversation_trace.append(
+                f"Barge-In: interrupted=True, "
+                f"played_ms={meta.played_audio_duration_ms:.0f}, "
+                f"total_ms={meta.total_audio_duration_ms:.0f}"
+            )
+        if signals.get("vad_barge_in"):
+            full_conversation_trace.append(
+                f"VAD Barge-In: {signals['vad_barge_in']}"
+            )
+        if signals.get("vad_skip_reason"):
+            full_conversation_trace.append(
+                f"VAD Skip Reason: {signals['vad_skip_reason']}"
+            )
+
+        eval_results = self.validate_turn_test(step, turn_response)
+
+        status = "SUCCESS"
+        if any(r["status"] == "FAILURE" for r in eval_results):
+            status = "FAILURE"
+
+        print(f"{status}: {case_name} - {step.turn}")
+        for r in eval_results:
+            if r["status"] == "FAILURE":
+                print(f"  - {r['justification']}")
+
+        if not eval_results:
+            results.append(
+                {
+                    "test_name": case_name,
+                    "turn": step.turn,
+                    "user": step.user or f"Event: {step.event}",
+                    "status": "SUCCESS",
+                    "errors": "",
+                    "expected": "",
+                    "actual": "",
+                    "session_id": test_session_id,
+                    "llm_results": "",
+                }
+            )
+        else:
+            for r in eval_results:
+                results.append(
+                    {
+                        "test_name": case_name,
+                        "turn": step.turn,
+                        "user": (step.user or f"Event: {step.event}"),
+                        "status": r["status"],
+                        "errors": (
+                            r["justification"]
+                            if r["status"] == "FAILURE"
+                            else ""
+                        ),
+                        "expected": r["expected"],
+                        "actual": r["actual"],
+                        "session_id": test_session_id,
+                        "llm_results": (
+                            f"{r['expectation']}: {r['status']} "
+                            f"({r['justification']})"
+                            if not r["expected"]
+                            else ""
+                        ),
+                    }
+                )
+        print("-" * 30)
+        return status
+
     def run_turn_tests(
         self,
         test_cases: list[TurnTestCase],
@@ -740,6 +984,25 @@ class TurnEvals:
         for case in track(sorted_cases, description="Running Turn Tests"):
             print(f"Running Turn Test: {case.name}")
 
+            if case.turns:
+                if case.turns[0].barge_in_after_ms is not None:
+                    raise ValueError(
+                        f"Invalid barge-in configuration in '{case.name}': "
+                        "The first turn (turn 0) cannot specify "
+                        "barge_in_after_ms."
+                    )
+                for i in range(len(case.turns) - 1):
+                    if (
+                        case.turns[i].barge_in_after_ms is not None
+                        and case.turns[i + 1].barge_in_after_ms is not None
+                    ):
+                        raise ValueError(
+                            "Invalid barge-in configuration in "
+                            f"'{case.name}': Consecutive barge-in turns "
+                            f"detected at turns {case.turns[i].turn} "
+                            f"and {case.turns[i + 1].turn}."
+                        )
+
             try:
                 resolved_history = self._resolve_historical_context(case)
             except DependencyResolutionError as e:
@@ -753,133 +1016,167 @@ class TurnEvals:
                 if case.turns:
                     # Multi-turn sequence
                     full_conversation_trace = []
-                    for step in case.turns:
-                        user_input = step.user
-                        event_name = step.event
+                    has_barge_in = any(
+                        getattr(step, "barge_in_after_ms", None) is not None
+                        for step in case.turns
+                    )
+                    use_bidi = has_barge_in or bool(
+                        case.config.get("single_bidi_stream")
+                    )
 
-                        if user_input:
-                            match = re.match(
-                                r"^<event>(.*?)</event>$", user_input
+                    interactive_session = None
+                    if use_bidi:
+                        interactive_session = (
+                            self.sessions_client.create_interactive_session(
+                                session_id=test_session_id,
+                                skip_playback_wait=False,
+                                capture_agent_audio=case.config.get(
+                                    "capture_agent_audio", False
+                                ),
+                                voice_config=case.config.get("voice_config"),
+                                background_noise_file=case.config.get(
+                                    "background_noise_file"
+                                ),
+                                bg_noise_snr=case.config.get(
+                                    "bg_noise_snr", 15.0
+                                ),
+                                use_tool_fakes=case.config.get(
+                                    "use_tool_fakes", True
+                                ),
+                                deployment_id=case.config.get("deployment_id"),
+                                historical_contexts=resolved_history,
                             )
-                            if match:
-                                event_name = match.group(1)
-                                user_input = None
+                        )
+                        interactive_session.start()
 
-                        if debug:
-                            input_str = (
-                                user_input
-                                if user_input is not None
-                                else f"<event>{event_name}</event>"
-                            )
-                            print(
-                                f"[DEBUG] Step: {step.turn} | Input: "
-                                f"{input_str}"
-                            )
-                            print(f"[DEBUG] Session ID: {test_session_id}")
-                            print(f"[DEBUG] Variables: {step.variables}")
-
-                        # Merge config
-                        merged_config = case.config.copy()
-                        merged_config.update(step.config)
-
-                        turn_response = self.sessions_client.run(
-                            session_id=test_session_id,
-                            text=user_input,
-                            event=event_name,
-                            variables=step.variables,
-                            historical_contexts=(
-                                resolved_history
-                                if step is case.turns[0]
+                    try:
+                        step_idx = 0
+                        while step_idx < len(case.turns):
+                            step = case.turns[step_idx]
+                            next_step = (
+                                case.turns[step_idx + 1]
+                                if step_idx + 1 < len(case.turns)
                                 else None
-                            ),
-                            **merged_config,
-                        )
-
-                        # Extract trace for this turn
-                        signals = self._extract_signals(turn_response)
-                        user_input = getattr(step, "user", "") or getattr(
-                            step, "event", ""
-                        )
-                        full_conversation_trace.append(f"User: {user_input}")
-                        full_conversation_trace.append(
-                            f"Agent Text: {signals['full_text'].strip()}"
-                        )
-                        for tool in signals["called_tools"]:
-                            full_conversation_trace.append(
-                                f"Tool Call: {tool} with args "
-                                f"{signals['tool_inputs'].get(tool, {})}"
-                            )
-                            full_conversation_trace.append(
-                                f"Tool Response: {tool} with result "
-                                f"{signals['tool_outputs'].get(tool, {})}"
-                            )
-                        if signals["target_agent"]:
-                            full_conversation_trace.append(
-                                f"Agent Transfer: {signals['target_agent']}"
                             )
 
-                        eval_results = self.validate_turn_test(
-                            step, turn_response
-                        )
+                            if (
+                                interactive_session is not None
+                                and next_step is not None
+                                and next_step.barge_in_after_ms is not None
+                            ):
+                                _, _, text_n = _resolve_step_input(step)
+                                _, _, text_n1 = _resolve_step_input(next_step)
 
-                        status = "SUCCESS"
-                        if any(r["status"] == "FAILURE" for r in eval_results):
-                            status = "FAILURE"
+                                resp_n, resp_n1 = (
+                                    interactive_session.send_turn_with_barge_in(
+                                        text=text_n,
+                                        barge_in_text=text_n1,
+                                        barge_in_after_ms=next_step.barge_in_after_ms,
+                                        variables=step.variables,
+                                        barge_in_variables=next_step.variables,
+                                    )
+                                )
+                                status_n = self._record_step_result(
+                                    step,
+                                    resp_n,
+                                    test_session_id,
+                                    full_conversation_trace,
+                                    results,
+                                    case.name,
+                                )
+                                if resp_n1 is None or status_n == "FAILURE":
+                                    if resp_n1 is None and not (
+                                        isinstance(resp_n, dict)
+                                        and resp_n.get("session_ended")
+                                    ):
+                                        print(
+                                            "Aborting multi-turn sequence "
+                                            f"'{case.name}' due to missing "
+                                            "next turn response."
+                                        )
+                                    break
 
-                        print(f"{status}: {case.name} - {step.turn}")
-                        for r in eval_results:
-                            if r["status"] == "FAILURE":
-                                print(f"  - {r['justification']}")
+                                status_n1 = self._record_step_result(
+                                    next_step,
+                                    resp_n1,
+                                    test_session_id,
+                                    full_conversation_trace,
+                                    results,
+                                    case.name,
+                                )
+                                if status_n1 == "FAILURE":
+                                    print(
+                                        "Aborting multi-turn sequence "
+                                        f"'{case.name}' due to failure at "
+                                        f"'{next_step.turn}'."
+                                    )
+                                    break
+                                step_idx += 2
+                                continue
 
-                        if not eval_results:
-                            results.append(
-                                {
-                                    "test_name": case.name,
-                                    "turn": step.turn,
-                                    "user": step.user or f"Event: {step.event}",
-                                    "status": "SUCCESS",
-                                    "errors": "",
-                                    "expected": "",
-                                    "actual": "",
-                                    "session_id": test_session_id,
-                                    "llm_results": "",
-                                }
+                            user_input, event_name, text_val = (
+                                _resolve_step_input(step)
                             )
-                        else:
-                            for r in eval_results:
-                                results.append(
-                                    {
-                                        "test_name": case.name,
-                                        "turn": step.turn,
-                                        "user": (
-                                            step.user or f"Event: {step.event}"
-                                        ),
-                                        "status": r["status"],
-                                        "errors": (
-                                            r["justification"]
-                                            if r["status"] == "FAILURE"
-                                            else ""
-                                        ),
-                                        "expected": r["expected"],
-                                        "actual": r["actual"],
-                                        "session_id": test_session_id,
-                                        "llm_results": (
-                                            f"{r['expectation']}: "
-                                            f"{r['status']} "
-                                            f"({r['justification']})"
-                                            if not r["expected"]
-                                            else ""
-                                        ),
-                                    }
+
+                            if debug:
+                                input_str = (
+                                    user_input
+                                    if user_input is not None
+                                    else f"<event>{event_name}</event>"
+                                )
+                                print(
+                                    f"[DEBUG] Step: {step.turn} | Input: "
+                                    f"{input_str}"
+                                )
+                                print(f"[DEBUG] Session ID: {test_session_id}")
+                                print(f"[DEBUG] Variables: {step.variables}")
+
+                            if interactive_session is not None:
+                                text_val = (
+                                    user_input
+                                    if user_input is not None
+                                    else f"event:{event_name}"
+                                )
+                                turn_response = interactive_session.send_turn(
+                                    text=text_val,
+                                    variables=step.variables,
+                                )
+                            else:
+                                merged_config = case.config.copy()
+                                merged_config.update(step.config)
+                                turn_response = self.sessions_client.run(
+                                    session_id=test_session_id,
+                                    text=user_input,
+                                    event=event_name,
+                                    variables=step.variables,
+                                    historical_contexts=(
+                                        resolved_history
+                                        if step is case.turns[0]
+                                        else None
+                                    ),
+                                    **merged_config,
                                 )
 
-                        if status == "FAILURE":
-                            print(
-                                f"Aborting multi-turn sequence '{case.name}' "
-                                f"due to failure at '{step.turn}'."
+                            status = self._record_step_result(
+                                step,
+                                turn_response,
+                                test_session_id,
+                                full_conversation_trace,
+                                results,
+                                case.name,
                             )
-                            break
-                        print("-" * 30)
+                            if status == "FAILURE":
+                                print(
+                                    "Aborting multi-turn sequence "
+                                    f"'{case.name}' due to failure at "
+                                    f"'{step.turn}'."
+                                )
+                                break
+                            step_idx += 1
+                    finally:
+                        if interactive_session is not None:
+                            with contextlib.suppress(Exception):
+                                interactive_session.close()
 
                     # Conversation-level expectations
                     if case.expectations:

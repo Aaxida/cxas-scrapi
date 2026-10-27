@@ -194,3 +194,30 @@ evals:
     session_parameters:
       account_id: "9820598207"
       customer_id: "4444444"
+
+  # --- Barge-In Simulation: tests audio interruption during a flow ---
+
+  - name: urgent_order_cancellation_barge_in
+    tags: [P0, audio, barge_in, orders]
+    steps:
+      - goal: Inquire about general store return policies
+        success_criteria: Agent begins explaining the store return policies
+        response_guide: >
+          You are a customer calling Acme Support. Ask: "Can you tell me your
+          store return and exchange policies?"
+        max_turns: 6
+      - goal: Barge in to cancel an order urgently
+        success_criteria: Agent ceases policy explanation and processes order cancellation
+        response_guide: >
+          While the agent is explaining the return policy, interrupt with:
+          "Wait, sorry, I just realized I need to cancel order 98765 right now!"
+        max_turns: 8
+        # barge_in_after_ms: Offset in milliseconds after agent audio playback begins.
+        # Only active when running SimulationEvals with modality="audio".
+        barge_in_after_ms: 1500
+    expectations:
+      - "The agent must halt its return policy explanation when interrupted"
+      - "The agent must focus on the cancellation of order 98765"
+      - "The agent must confirm the cancellation status"
+    session_parameters:
+      order_id: "98765"

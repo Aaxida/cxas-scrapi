@@ -56,36 +56,6 @@ def _load_tool_config(file_path: Path) -> tuple[dict | None, Path | None]:
 
 
 @rule("tools")
-class MissingAgentAction(Rule):
-    id = "T001"
-    name = "tool-error-pattern"
-    description = (
-        "Tool must return agent_action on error for deterministic recovery"
-    )
-    default_severity = Severity.ERROR
-
-    def check(
-        self, file_path: Path, content: str, context: LintContext
-    ) -> list[LintResult]:
-        if file_path.suffix != ".py":
-            return []
-        rel = str(file_path.relative_to(context.project_root))
-        if "agent_action" not in content:
-            return [
-                self.make_result(
-                    file=rel,
-                    message="Missing agent_action error return pattern",
-                    fix=(
-                        'Add: return {"agent_action":'
-                        ' "error message for agent'
-                        ' to relay"}'
-                    ),
-                )
-            ]
-        return []
-
-
-@rule("tools")
 class MissingDocstring(Rule):
     id = "T002"
     name = "tool-docstring"
@@ -282,41 +252,6 @@ class ExcessiveReturnData(Rule):
             for pattern, msg, fix in self.RETURN_PATTERNS
             if re.search(pattern, content)
         ]
-
-
-@rule("tools")
-class ToolNameNotSnakeCase(Rule):
-    id = "T007"
-    name = "tool-name-snake-case"
-    description = (
-        "Tool JSON name/displayName must be"
-        " snake_case (no spaces or mixed case)"
-    )
-    default_severity = Severity.ERROR
-
-    def check(
-        self, file_path: Path, content: str, context: LintContext
-    ) -> list[LintResult]:
-        tool_config, json_path = _load_tool_config(file_path)
-        if not tool_config:
-            return []
-
-        rel = str(json_path.relative_to(context.project_root))
-        results = []
-        for field_name in ("name", "displayName"):
-            value = tool_config.get(field_name, "")
-            if value and (" " in value or value != value.lower()):
-                snake = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
-                results.append(
-                    self.make_result(
-                        file=rel,
-                        message=(
-                            f"Tool {field_name} '{value}' is not snake_case"
-                        ),
-                        fix=f'Change to: "{field_name}": "{snake}"',
-                    )
-                )
-        return results
 
 
 @rule("tools")
